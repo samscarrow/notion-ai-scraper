@@ -16,8 +16,17 @@ function downloadBlob(content, filename, mime = "text/plain") {
   URL.revokeObjectURL(url);
 }
 
+async function getPageId() {
+  const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+  const url = tabs[0]?.url ?? "";
+  // Notion URLs contain the page/thread ID as a 32-hex-char segment
+  const match = url.match(/([0-9a-f]{32})/i);
+  return match ? match[1].replace(/-/g, "") : null;
+}
+
 async function render() {
-  const convos = await send({ type: "GET_CONVERSATIONS" });
+  const pageId = await getPageId();
+  const convos = await send({ type: "GET_CONVERSATIONS", pageId });
   const list = $("#conversation-list");
   const badge = $("#status-badge");
 

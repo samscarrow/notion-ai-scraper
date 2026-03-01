@@ -22,7 +22,7 @@ browser.runtime.onMessage.addListener((msg, sender) => {
     case "SYNC_RECORDS":
       return handleSyncRecords(msg.threads, msg.messages);
     case "GET_CONVERSATIONS":
-      return getConversations();
+      return getConversations(msg.pageId);
     case "CLEAR_CONVERSATIONS":
       return clearConversations();
     case "EXPORT_MD":
@@ -270,10 +270,15 @@ async function saveStore(store) {
   await browser.storage.local.set({ [STORAGE_KEY]: store });
 }
 
-async function getConversations() {
+async function getConversations(pageId) {
   const store = await loadStore();
   return Object.values(store)
-    .filter((c) => c.turns?.length > 0)
+    .filter((c) => {
+      if (!c.turns?.length) return false;
+      if (!pageId) return true;
+      const tid = (c.threadId ?? "").replace(/-/g, "");
+      return tid === pageId.replace(/-/g, "");
+    })
     .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
 }
 
