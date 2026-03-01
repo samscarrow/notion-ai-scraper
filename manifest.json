@@ -22,16 +22,16 @@
   "content_scripts": [
     {
       "matches": ["https://www.notion.so/*", "https://notion.so/*"],
-      "js": ["content/loader.js"],
+      "js": ["content/interceptor.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
+      "matches": ["https://www.notion.so/*", "https://notion.so/*"],
+      "js": ["content/bridge.js"],
       "run_at": "document_start",
       "all_frames": false
-    }
-  ],
-
-  "web_accessible_resources": [
-    {
-      "resources": ["content/interceptor.js"],
-      "matches": ["https://www.notion.so/*", "https://notion.so/*"]
     }
   ],
 
