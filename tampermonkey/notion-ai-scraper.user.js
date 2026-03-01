@@ -30,7 +30,7 @@
   // ── Storage ───────────────────────────────────────────────────────────────
 
   function loadStore() {
-    try { return JSON.parse(GM_getValue(STORAGE_KEY, "{}")); } catch { return {}; }
+    try { return JSON.parse(GM_getValue(STORAGE_KEY, "{}")); } catch (e) { return {}; }
   }
 
   function saveStore(store) {
