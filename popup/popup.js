@@ -94,12 +94,14 @@ async function render() {
 // ── Event listeners ─────────────────────────────────────────────────────────
 
 $("#btn-export-all-md").addEventListener("click", async () => {
-  const res = await send({ type: "EXPORT_MD" });
+  const pageId = await getPageId();
+  const res = await send({ type: "EXPORT_MD", pageId });
   if (res?.ok) downloadBlob(res.content, res.filename);
 });
 
 $("#btn-export-all-json").addEventListener("click", async () => {
-  const res = await send({ type: "EXPORT_JSON" });
+  const pageId = await getPageId();
+  const res = await send({ type: "EXPORT_JSON", pageId });
   if (res?.ok) downloadBlob(res.content, res.filename, "application/json");
 });
 

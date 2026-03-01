@@ -26,9 +26,9 @@ browser.runtime.onMessage.addListener((msg, sender) => {
     case "CLEAR_CONVERSATIONS":
       return clearConversations();
     case "EXPORT_MD":
-      return exportMarkdown(msg.conversationId);
+      return exportMarkdown(msg.conversationId, msg.pageId);
     case "EXPORT_JSON":
-      return exportJSON(msg.conversationId);
+      return exportJSON(msg.conversationId, msg.pageId);
   }
 });
 
@@ -352,10 +352,15 @@ function makeAllFilename(ext) {
 
 // ── Export: Markdown ──────────────────────────────────────────────────────
 
-async function exportMarkdown(conversationId) {
+async function exportMarkdown(conversationId, pageId) {
   const store = await loadStore();
   const convo = conversationId ? store[conversationId] : null;
-  const targets = convo ? [convo] : Object.values(store).filter((c) => c.turns?.length > 0);
+  const targets = convo ? [convo] : Object.values(store).filter((c) => {
+    if (!c.turns?.length) return false;
+    if (!pageId) return false;
+    const tid = (c.threadId ?? "").replace(/-/g, "");
+    return tid === pageId.replace(/-/g, "");
+  });
 
   const md = targets
     .map((c) => {
@@ -390,12 +395,17 @@ async function exportMarkdown(conversationId) {
 
 // ── Export: JSON ──────────────────────────────────────────────────────────
 
-async function exportJSON(conversationId) {
+async function exportJSON(conversationId, pageId) {
   const store = await loadStore();
   const convo = conversationId ? store[conversationId] : null;
   const data = convo
     ? convo
-    : Object.values(store).filter((c) => c.turns?.length > 0);
+    : Object.values(store).filter((c) => {
+        if (!c.turns?.length) return false;
+        if (!pageId) return false;
+        const tid = (c.threadId ?? "").replace(/-/g, "");
+        return tid === pageId.replace(/-/g, "");
+      });
   const cleaned = JSON.stringify(data, (key, val) =>
     key === "_processedMsgIds" || key === "messageOrder" ? undefined : val
   , 2);
