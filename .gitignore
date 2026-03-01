@@ -2,4 +2,4 @@
 *.log
 .playwright-mcp/
 node_modules/
-icons/*.png
+web-ext-artifacts/

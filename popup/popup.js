@@ -23,26 +23,59 @@ async function render() {
 
   badge.textContent = `${convos.length} conversation${convos.length !== 1 ? "s" : ""}`;
 
+  list.replaceChildren();
+
   if (convos.length === 0) {
-    list.innerHTML = `<p class="empty-state">No conversations captured yet.<br/>Open a Notion page with AI chat.</p>`;
+    const p = document.createElement("p");
+    p.className = "empty-state";
+    p.textContent = "No conversations captured yet.";
+    p.appendChild(document.createElement("br"));
+    p.appendChild(document.createTextNode("Open a Notion page with AI chat."));
+    list.appendChild(p);
     return;
   }
 
-  list.innerHTML = convos
-    .map(
-      (c) => `
-      <div class="convo-item" data-id="${c.id}">
-        <div class="convo-meta">
-          <div class="convo-id" title="${c.id}">${c.id}</div>
-          <div class="convo-turns">${c.turns?.length ?? 0} turns · ${new Date(c.updatedAt ?? c.createdAt).toLocaleString()}</div>
-        </div>
-        <div class="convo-actions">
-          <button class="btn-icon" data-action="md" data-id="${c.id}">MD</button>
-          <button class="btn-icon" data-action="json" data-id="${c.id}">JSON</button>
-        </div>
-      </div>`
-    )
-    .join("");
+  for (const c of convos) {
+    const item = document.createElement("div");
+    item.className = "convo-item";
+    item.dataset.id = c.id;
+
+    const meta = document.createElement("div");
+    meta.className = "convo-meta";
+
+    const idEl = document.createElement("div");
+    idEl.className = "convo-id";
+    idEl.title = c.id;
+    idEl.textContent = c.title ?? c.id;
+
+    const turnsEl = document.createElement("div");
+    turnsEl.className = "convo-turns";
+    turnsEl.textContent = `${c.turns?.length ?? 0} turns · ${new Date(c.updatedAt ?? c.createdAt).toLocaleString()}`;
+
+    meta.appendChild(idEl);
+    meta.appendChild(turnsEl);
+
+    const actions = document.createElement("div");
+    actions.className = "convo-actions";
+
+    const mdBtn = document.createElement("button");
+    mdBtn.className = "btn-icon";
+    mdBtn.dataset.action = "md";
+    mdBtn.dataset.id = c.id;
+    mdBtn.textContent = "MD";
+
+    const jsonBtn = document.createElement("button");
+    jsonBtn.className = "btn-icon";
+    jsonBtn.dataset.action = "json";
+    jsonBtn.dataset.id = c.id;
+    jsonBtn.textContent = "JSON";
+
+    actions.appendChild(mdBtn);
+    actions.appendChild(jsonBtn);
+    item.appendChild(meta);
+    item.appendChild(actions);
+    list.appendChild(item);
+  }
 }
 
 // ── Event listeners ─────────────────────────────────────────────────────────
