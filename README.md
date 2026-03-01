@@ -29,7 +29,7 @@ No other tool captures Notion's built-in AI chat. This fills that gap.
 ### Option B: Tampermonkey Userscript
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/) for your browser
-2. Open the [userscript](tampermonkey/notion-ai-scraper.user.js) and click **Raw**
+2. Install from [Greasy Fork](https://greasyfork.org/en/scripts/567924-notion-ai-chat-scraper) — or open the [userscript](tampermonkey/notion-ai-scraper.user.js) and click **Raw**
 3. Tampermonkey will prompt you to install it
 
 > If using both, disable one — they'll double-capture if both are active.
