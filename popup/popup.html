@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Notion AI Scraper</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header>
+    <h1>Notion AI Scraper</h1>
+    <div id="status-badge" class="badge">0 conversations</div>
+  </header>
+
+  <section id="conversation-list">
+    <p class="empty-state">No conversations captured yet.<br />Open a Notion page with AI chat.</p>
+  </section>
+
+  <footer>
+    <button id="btn-export-all-md" class="btn btn-primary">Export All → MD</button>
+    <button id="btn-export-all-json" class="btn btn-secondary">Export All → JSON</button>
+    <button id="btn-clear" class="btn btn-danger">Clear</button>
+  </footer>
+
+  <script src="popup.js" type="module"></script>
+</body>
+</html>

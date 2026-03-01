@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html><head><title>Notion AI Scraper — Test Harness</title></head>
+<body>
+<h1>Test Harness</h1>
+<pre id="log"></pre>
+<script>
+// Minimal shim for GM_* APIs (simulating Tampermonkey)
+const _store = {};
+window.GM_getValue = (k, d) => { try { return _store[k] ?? d; } catch { return d; } };
+window.GM_setValue = (k, v) => { _store[k] = v; };
+window.GM_download = (opts) => { log("GM_download: " + opts.name); };
+window.GM_registerMenuCommand = (label, fn) => { window["__menu_" + label.replace(/\W/g,"")] = fn; };
+
+function log(msg) {
+  const el = document.getElementById("log");
+  el.textContent += msg + "\n";
+  console.log("[harness]", msg);
+}
+
+// Expose store for inspection
+window.__getStore = () => JSON.parse(GM_getValue("notion_ai_conversations", "{}"));
+</script>
+</body>
+</html>

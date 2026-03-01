@@ -1,0 +1,5 @@
+*.har
+*.log
+.playwright-mcp/
+node_modules/
+icons/*.png
