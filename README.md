@@ -2,7 +2,7 @@
 
 Export your [Notion AI](https://www.notion.so/product/ai) chat conversations as Markdown or JSON — including thinking/chain-of-thought, tool calls, and full conversation history.
 
-No other tool captures Notion's built-in AI chat. This fills that gap.
+Notion's built-in AI chat is not covered by generic export tools. This fills that gap.
 
 ![icon](icons/icon128.png)
 
@@ -22,7 +22,7 @@ No other tool captures Notion's built-in AI chat. This fills that gap.
 
 ### Option A: Firefox Extension (recommended)
 
-1. Download the latest `.xpi` from [Releases](https://github.com/git-scarrow/notion-ai-scraper/releases)
+1. Download the latest `.xpi` from [Releases](../../releases)
 2. In Firefox: `about:addons` → gear icon ⚙️ → **Install Add-on From File...**
 3. Select the `.xpi` — it installs permanently and survives restarts
 
