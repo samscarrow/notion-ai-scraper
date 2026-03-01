@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Notion AI Chat Scraper
 // @namespace    https://notion.so
-// @version      0.3.1
+// @version      0.3.2
 // @description  Captures Notion AI chat conversations (live + historical) and exports as Markdown or JSON
 // @author       notion-ai-scraper
 // @match        https://www.notion.so/*
@@ -9,161 +9,20 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_registerMenuCommand
+// @grant        unsafeWindow
 // @run-at       document-start
 // ==/UserScript==
 
 /**
- * Architecture:
- *   GM_* grants cause Tampermonkey to run in a sandbox — window.fetch patches
- *   there don't affect the real page. We inject a <script> tag into the page's
- *   MAIN world that patches fetch and posts captured data via window.postMessage.
- *   This script listens for those messages and stores them via GM_setValue.
+ * Uses unsafeWindow to patch the real page's fetch directly.
+ * This avoids the sandbox isolation that comes with GM_* grants.
  */
 (function () {
   "use strict";
 
-  const MSG_TAG = "__notion_ai_scraper__";
   const STORAGE_KEY = "notion_ai_conversations";
-
-  // ── Inject page-world interceptor ─────────────────────────────────────────
-
-  const pageScript = `(function () {
-  "use strict";
-  const MSG_TAG = "__notion_ai_scraper__";
   const LIVE_PATH = "/api/v3/runInferenceTranscript";
   const SYNC_PATH = "/api/v3/syncRecordValuesSpaceInitial";
-
-  function emit(payload) {
-    window.postMessage({ tag: MSG_TAG, payload }, "*");
-  }
-
-  function cleanText(text) {
-    return text
-      .replace(/<lang[^>]*\\/>/g, "")
-      .replace(/<edit_reference[^>]*>[\\s\\S]*?<\\/edit_reference>/g, "")
-      .trim();
-  }
-
-  function extractRichText(value) {
-    if (!Array.isArray(value)) return typeof value === "string" ? value.trim() : null;
-    return value.map((chunk) => {
-      if (!Array.isArray(chunk)) return typeof chunk === "string" ? chunk : "";
-      const text = chunk[0] ?? "";
-      const annotations = chunk[1];
-      if (text === "\\u2023" && Array.isArray(annotations)) {
-        for (const ann of annotations) {
-          if (Array.isArray(ann) && ann.length >= 2) {
-            if (ann[0] === "p") return "[page:" + ann[1] + "]";
-            if (ann[0] === "u") return "[user:" + ann[1] + "]";
-            if (ann[0] === "a") return "[agent:" + ann[1] + "]";
-          }
-        }
-      }
-      return text;
-    }).join("").trim() || null;
-  }
-
-  function extractUserMessage(reqBody) {
-    if (!reqBody?.transcript) return null;
-    const userEntries = reqBody.transcript.filter((e) => e.type === "user");
-    const last = userEntries.at(-1);
-    if (!last?.value) return null;
-    return extractRichText(last.value);
-  }
-
-  function handleSyncResponse(data) {
-    const rm = data?.recordMap ?? {};
-    const threads = {};
-    for (const [id, rec] of Object.entries(rm.thread ?? {})) {
-      const val = rec?.value?.value ?? rec?.value ?? {};
-      if (val.type === "workflow" && val.messages?.length) threads[id] = val;
-    }
-    const messages = {};
-    for (const [id, rec] of Object.entries(rm.thread_message ?? {})) {
-      const val = rec?.value?.value ?? rec?.value ?? {};
-      if (val.step || val.role) messages[id] = val;
-    }
-    if (!Object.keys(threads).length && !Object.keys(messages).length) return;
-    emit({ type: "SYNC_RECORDS", threads, messages });
-  }
-
-  async function handleNDJSONStream(response, meta) {
-    const reader = response.body?.getReader();
-    if (!reader) return;
-    const decoder = new TextDecoder();
-    let buffer = "";
-    const lines = [];
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split("\\n");
-        buffer = parts.pop() ?? "";
-        for (const p of parts) {
-          const t = p.trim();
-          if (!t) continue;
-          try { lines.push(JSON.parse(t)); } catch {}
-        }
-      }
-      if (buffer.trim()) { try { lines.push(JSON.parse(buffer.trim())); } catch {} }
-    } catch {}
-    if (lines.length) emit({ type: "TRANSCRIPT", lines, meta });
-  }
-
-  const _fetch = window.fetch.bind(window);
-  window.fetch = async function (input, init) {
-    const url = typeof input === "string" ? input : input?.url ?? "";
-    let path = "";
-    try { path = new URL(url, location.origin).pathname; } catch {}
-
-    if (path === LIVE_PATH) {
-      let reqBody = null;
-      try {
-        const raw = init?.body ?? (input instanceof Request ? await input.clone().text() : null);
-        if (raw) reqBody = JSON.parse(raw);
-      } catch {}
-      const response = await _fetch(input, init);
-      handleNDJSONStream(response.clone(), {
-        userMessage: extractUserMessage(reqBody),
-        traceId: reqBody?.traceId ?? null,
-        spaceId: reqBody?.spaceId ?? null,
-      });
-      return response;
-    }
-
-    if (path === SYNC_PATH) {
-      const response = await _fetch(input, init);
-      response.clone().json().then((data) => {
-        try { handleSyncResponse(data); } catch {}
-      }).catch(() => {});
-      return response;
-    }
-
-    return _fetch(input, init);
-  };
-
-  console.debug("[notion-ai-scraper] v0.3.1 page-world interceptor active");
-})();`;
-
-  const script = document.createElement("script");
-  script.textContent = pageScript;
-  (document.head ?? document.documentElement).appendChild(script);
-  script.remove();
-
-  // ── Receive messages from page world ──────────────────────────────────────
-
-  window.addEventListener("message", (event) => {
-    if (event.source !== window || event.data?.tag !== MSG_TAG) return;
-    const { payload } = event.data;
-    if (!payload?.type) return;
-
-    if (payload.type === "TRANSCRIPT") {
-      handleTranscript(payload.lines, payload.meta);
-    } else if (payload.type === "SYNC_RECORDS") {
-      handleSyncRecords(payload.threads, payload.messages);
-    }
-  });
 
   // ── Storage ───────────────────────────────────────────────────────────────
 
@@ -186,16 +45,17 @@
 
   function extractRichText(value) {
     if (!Array.isArray(value)) return typeof value === "string" ? value.trim() : null;
-    return value.map((chunk) => {
+    return value.map(function (chunk) {
       if (!Array.isArray(chunk)) return typeof chunk === "string" ? chunk : "";
-      const text = chunk[0] ?? "";
-      const annotations = chunk[1];
+      var text = chunk[0] || "";
+      var annotations = chunk[1];
       if (text === "\u2023" && Array.isArray(annotations)) {
-        for (const ann of annotations) {
+        for (var i = 0; i < annotations.length; i++) {
+          var ann = annotations[i];
           if (Array.isArray(ann) && ann.length >= 2) {
-            if (ann[0] === "p") return `[page:${ann[1]}]`;
-            if (ann[0] === "u") return `[user:${ann[1]}]`;
-            if (ann[0] === "a") return `[agent:${ann[1]}]`;
+            if (ann[0] === "p") return "[page:" + ann[1] + "]";
+            if (ann[0] === "u") return "[user:" + ann[1] + "]";
+            if (ann[0] === "a") return "[agent:" + ann[1] + "]";
           }
         }
       }
@@ -203,141 +63,220 @@
     }).join("").trim() || null;
   }
 
+  function extractUserMessage(reqBody) {
+    if (!reqBody || !reqBody.transcript) return null;
+    var userEntries = reqBody.transcript.filter(function (e) { return e.type === "user"; });
+    var last = userEntries[userEntries.length - 1];
+    if (!last || !last.value) return null;
+    return extractRichText(last.value);
+  }
+
   // ── TRANSCRIPT handler (live chat) ────────────────────────────────────────
 
   function handleTranscript(ndjsonLines, meta) {
-    const contentByPath = {};
-    const steps = [];
-    const toolResults = [];
+    var contentByPath = {};
+    var steps = [];
+    var toolResults = [];
 
-    for (const obj of ndjsonLines) {
+    for (var i = 0; i < ndjsonLines.length; i++) {
+      var obj = ndjsonLines[i];
       if (obj.type !== "patch") continue;
-      for (const v of obj.v ?? []) {
-        const op = v.o, path = v.p ?? "", val = v.v;
-        if (op === "a" && path.endsWith("/-") && val !== null && typeof val === "object") {
+      var patches = obj.v || [];
+      for (var j = 0; j < patches.length; j++) {
+        var v = patches[j];
+        var op = v.o, path = v.p || "", val = v.v;
+        if (op === "a" && path.slice(-2) === "/-" && val !== null && typeof val === "object") {
           if (val.type === "agent-inference") steps.push({ id: val.id, model: null });
           else if (val.type === "agent-tool-result") toolResults.push({ toolName: val.toolName, state: val.state, input: val.input });
         }
-        if ((op === "x" || op === "p") && path.includes("/content") && typeof val === "string") {
-          contentByPath[path] = op === "x" ? (contentByPath[path] ?? "") + val : val;
+        if (op === "x" && path.indexOf("/content") !== -1 && typeof val === "string") {
+          contentByPath[path] = (contentByPath[path] || "") + val;
         }
-        if (op === "a" && path.includes("/model") && typeof val === "string") {
-          const last = steps.at(-1);
-          if (last) last.model = val;
+        if (op === "p" && path.indexOf("/content") !== -1 && typeof val === "string") {
+          contentByPath[path] = val;
+        }
+        if (op === "a" && path.indexOf("/model") !== -1 && typeof val === "string") {
+          var lastStep = steps[steps.length - 1];
+          if (lastStep) lastStep.model = val;
         }
       }
     }
 
-    const inferenceTexts = [];
-    for (const [path, text] of Object.entries(contentByPath)) {
-      const match = path.match(/^\/s\/(\d+)\/value\/(\d+)\/content$/);
+    var inferenceTexts = [];
+    var pathKeys = Object.keys(contentByPath);
+    for (var k = 0; k < pathKeys.length; k++) {
+      var p = pathKeys[k];
+      var match = p.match(/^\/s\/(\d+)\/value\/(\d+)\/content$/);
       if (!match) continue;
-      const trimmed = text.trim();
-      if (trimmed.startsWith("{") && (trimmed.includes('"urls"') || trimmed.includes('"pageUrl"') || trimmed.includes('"command"'))) continue;
+      var trimmed = contentByPath[p].trim();
+      if (trimmed.charAt(0) === "{" && (trimmed.indexOf('"urls"') !== -1 || trimmed.indexOf('"pageUrl"') !== -1 || trimmed.indexOf('"command"') !== -1)) continue;
       if (trimmed.length > 0) inferenceTexts.push({ stepIdx: +match[1], valueIdx: +match[2], content: trimmed });
     }
-    inferenceTexts.sort((a, b) => a.stepIdx - b.stepIdx || a.valueIdx - b.valueIdx);
+    inferenceTexts.sort(function (a, b) { return a.stepIdx - b.stepIdx || a.valueIdx - b.valueIdx; });
 
-    const stepGroups = new Map();
-    for (const t of inferenceTexts) {
-      if (!stepGroups.has(t.stepIdx)) stepGroups.set(t.stepIdx, []);
-      stepGroups.get(t.stepIdx).push(t);
+    var stepGroups = {};
+    for (var t = 0; t < inferenceTexts.length; t++) {
+      var si = inferenceTexts[t].stepIdx;
+      if (!stepGroups[si]) stepGroups[si] = [];
+      stepGroups[si].push(inferenceTexts[t]);
     }
-    const groupKeys = [...stepGroups.keys()].sort((a, b) => a - b);
-    const lastGroup = groupKeys.at(-1);
-    const responseParts = [], thinkingParts = [];
-    for (const key of groupKeys) {
-      const texts = stepGroups.get(key).map((t) => t.content);
-      if (key === lastGroup) responseParts.push(...texts);
-      else for (const text of texts) { if (text.length > 200) thinkingParts.push(text); else responseParts.push(text); }
+    var groupKeys = Object.keys(stepGroups).map(Number).sort(function (a, b) { return a - b; });
+    var lastGroup = groupKeys[groupKeys.length - 1];
+    var responseParts = [], thinkingParts = [];
+    for (var g = 0; g < groupKeys.length; g++) {
+      var gk = groupKeys[g];
+      var texts = stepGroups[gk].map(function (x) { return x.content; });
+      if (gk === lastGroup) {
+        responseParts = responseParts.concat(texts);
+      } else {
+        for (var tt = 0; tt < texts.length; tt++) {
+          if (texts[tt].length > 200) thinkingParts.push(texts[tt]);
+          else responseParts.push(texts[tt]);
+        }
+      }
     }
 
-    const assistantContent = cleanText(responseParts.join("\n"));
-    const thinkingContent = thinkingParts.join("\n").trim() || null;
+    var assistantContent = cleanText(responseParts.join("\n"));
+    var thinkingContent = thinkingParts.join("\n").trim() || null;
     if (!assistantContent && !meta.userMessage) return;
 
-    const key = meta.traceId ?? `unknown-${Date.now()}`;
-    const store = loadStore();
+    var key = meta.traceId || ("unknown-" + Date.now());
+    var store = loadStore();
     if (!store[key]) {
       store[key] = { id: key, spaceId: meta.spaceId, model: null, turns: [], toolCalls: [], createdAt: Date.now() };
     }
-    const entry = store[key];
+    var entry = store[key];
+
     if (meta.userMessage) {
-      const lastUser = entry.turns.findLast((t) => t.role === "user");
-      if (!(lastUser && lastUser.content === meta.userMessage && Math.abs((lastUser.timestamp ?? 0) - Date.now()) < 2000)) {
+      var turns = entry.turns;
+      var lastUser = null;
+      for (var tu = turns.length - 1; tu >= 0; tu--) {
+        if (turns[tu].role === "user") { lastUser = turns[tu]; break; }
+      }
+      if (!(lastUser && lastUser.content === meta.userMessage && Math.abs((lastUser.timestamp || 0) - Date.now()) < 2000)) {
         entry.turns.push({ role: "user", content: meta.userMessage, timestamp: Date.now() });
       }
     }
     if (assistantContent) {
-      const turn = { role: "assistant", content: assistantContent, timestamp: Date.now() };
+      var turn = { role: "assistant", content: assistantContent, timestamp: Date.now() };
       if (thinkingContent) turn.thinking = thinkingContent;
       entry.turns.push(turn);
     }
-    entry.model = steps.find((s) => s.model)?.model ?? entry.model;
-    const fc = toolResults.filter((t) => t.toolName && t.state !== "pending").map((t) => ({ tool: t.toolName, input: t.input }));
-    if (fc.length) entry.toolCalls.push(...fc);
+    var modelStep = steps.find(function (s) { return s.model; });
+    entry.model = (modelStep && modelStep.model) || entry.model;
+    var fc = toolResults.filter(function (t) { return t.toolName && t.state !== "pending"; })
+      .map(function (t) { return { tool: t.toolName, input: t.input }; });
+    if (fc.length) entry.toolCalls = entry.toolCalls.concat(fc);
     entry.updatedAt = Date.now();
     saveStore(store);
-    console.debug(`[notion-ai-scraper] live: trace ${key}, turns=${entry.turns.length}`);
+    console.debug("[notion-ai-scraper] live: trace " + key + ", turns=" + entry.turns.length);
+  }
+
+  // ── NDJSON stream reader ──────────────────────────────────────────────────
+
+  async function handleNDJSONStream(response, meta) {
+    var reader = response.body && response.body.getReader();
+    if (!reader) return;
+    var decoder = new TextDecoder();
+    var buffer = "";
+    var lines = [];
+    try {
+      while (true) {
+        var result = await reader.read();
+        if (result.done) break;
+        buffer += decoder.decode(result.value, { stream: true });
+        var parts = buffer.split("\n");
+        buffer = parts.pop() || "";
+        for (var i = 0; i < parts.length; i++) {
+          var t = parts[i].trim();
+          if (!t) continue;
+          try { lines.push(JSON.parse(t)); } catch (e) {}
+        }
+      }
+      if (buffer.trim()) { try { lines.push(JSON.parse(buffer.trim())); } catch (e) {} }
+    } catch (err) {
+      console.warn("[notion-ai-scraper] NDJSON read error:", err);
+    }
+    if (lines.length) handleTranscript(lines, meta);
   }
 
   // ── SYNC_RECORDS handler (historical chat) ────────────────────────────────
 
-  function handleSyncRecords(threads, messages) {
-    if (!threads && !messages) return;
-    const store = loadStore();
+  function handleSyncResponse(data) {
+    var rm = (data && data.recordMap) || {};
+    var threads = {};
+    var threadEntries = Object.entries(rm.thread || {});
+    for (var i = 0; i < threadEntries.length; i++) {
+      var id = threadEntries[i][0], rec = threadEntries[i][1];
+      var val = (rec && rec.value && rec.value.value) || (rec && rec.value) || {};
+      if (val.type === "workflow" && val.messages && val.messages.length) threads[id] = val;
+    }
+    var messages = {};
+    var msgEntries = Object.entries(rm.thread_message || {});
+    for (var j = 0; j < msgEntries.length; j++) {
+      var mid = msgEntries[j][0], mrec = msgEntries[j][1];
+      var mval = (mrec && mrec.value && mrec.value.value) || (mrec && mrec.value) || {};
+      if (mval.step || mval.role) messages[mid] = mval;
+    }
+    if (!Object.keys(threads).length && !Object.keys(messages).length) return;
 
-    for (const [threadId, thread] of Object.entries(threads ?? {})) {
-      const key = `thread-${threadId}`;
+    var store = loadStore();
+
+    var tids = Object.keys(threads);
+    for (var ti = 0; ti < tids.length; ti++) {
+      var threadId = tids[ti], thread = threads[threadId];
+      var key = "thread-" + threadId;
       if (!store[key]) {
         store[key] = {
-          id: key, threadId, title: thread.data?.title ?? null, spaceId: thread.space_id,
-          model: null, turns: [], toolCalls: [], createdAt: thread.created_time ?? Date.now(),
-          messageOrder: thread.messages,
+          id: key, threadId: threadId, title: (thread.data && thread.data.title) || null,
+          spaceId: thread.space_id, model: null, turns: [], toolCalls: [],
+          createdAt: thread.created_time || Date.now(), messageOrder: thread.messages,
         };
       } else {
         store[key].messageOrder = thread.messages;
-        if (thread.data?.title) store[key].title = thread.data.title;
+        if (thread.data && thread.data.title) store[key].title = thread.data.title;
       }
       store[key].updatedAt = Date.now();
     }
 
-    for (const [msgId, msg] of Object.entries(messages ?? {})) {
-      const step = msg.step ?? {};
-      const key = `thread-${msg.parent_id}`;
-      if (!store[key]) {
-        store[key] = {
-          id: key, threadId: msg.parent_id, title: null, spaceId: msg.space_id,
-          model: null, turns: [], toolCalls: [], createdAt: msg.created_time ?? Date.now(), messageOrder: [],
+    var mids = Object.keys(messages);
+    for (var mi = 0; mi < mids.length; mi++) {
+      var msgId = mids[mi], msg = messages[msgId];
+      var step = msg.step || {};
+      var mkey = "thread-" + msg.parent_id;
+      if (!store[mkey]) {
+        store[mkey] = {
+          id: mkey, threadId: msg.parent_id, title: null, spaceId: msg.space_id,
+          model: null, turns: [], toolCalls: [], createdAt: msg.created_time || Date.now(), messageOrder: [],
         };
       }
-      const entry = store[key];
+      var entry = store[mkey];
       if (!entry._processedMsgIds) entry._processedMsgIds = [];
-      if (entry._processedMsgIds.includes(msgId)) continue;
+      if (entry._processedMsgIds.indexOf(msgId) !== -1) continue;
 
       if (!step.type && msg.role === "editor") {
-        // Cached stub — no content
         entry._processedMsgIds.push(msgId);
       } else if (step.type === "agent-inference") {
-        const values = step.value ?? [];
-        const responseParts = [], thinkingParts = [];
-        let model = step.model ?? null;
-        for (const item of (Array.isArray(values) ? values : [])) {
-          if (item.type === "text") { const c = cleanText(item.content ?? ""); if (c) responseParts.push(c); }
-          else if (item.type === "thinking") { const c = (item.content ?? "").trim(); if (c) thinkingParts.push(c); }
+        var values = Array.isArray(step.value) ? step.value : [];
+        var rParts = [], tParts = [];
+        var stepModel = step.model || null;
+        for (var vi = 0; vi < values.length; vi++) {
+          var item = values[vi];
+          if (item.type === "text") { var c = cleanText(item.content || ""); if (c) rParts.push(c); }
+          else if (item.type === "thinking") { var tc = (item.content || "").trim(); if (tc) tParts.push(tc); }
         }
-        const content = responseParts.join("\n").trim();
+        var content = rParts.join("\n").trim();
         if (content) {
-          const turn = { role: "assistant", content, msgId, timestamp: msg.created_time ?? Date.now() };
-          if (thinkingParts.length) turn.thinking = thinkingParts.join("\n");
-          if (model) { turn.model = model; entry.model = model; }
-          entry.turns.push(turn);
+          var aturn = { role: "assistant", content: content, msgId: msgId, timestamp: msg.created_time || Date.now() };
+          if (tParts.length) aturn.thinking = tParts.join("\n");
+          if (stepModel) { aturn.model = stepModel; entry.model = stepModel; }
+          entry.turns.push(aturn);
         }
         entry._processedMsgIds.push(msgId);
       } else if (step.type === "user" || step.type === "human") {
-        const content = extractRichText(step.value);
-        if (content) {
-          entry.turns.push({ role: "user", content, msgId, timestamp: msg.created_time ?? Date.now() });
+        var ucontent = extractRichText(step.value);
+        if (ucontent) {
+          entry.turns.push({ role: "user", content: ucontent, msgId: msgId, timestamp: msg.created_time || Date.now() });
           entry._processedMsgIds.push(msgId);
         }
       } else {
@@ -346,37 +285,76 @@
       entry.updatedAt = Date.now();
     }
 
-    for (const entry of Object.values(store)) {
-      if (!entry.messageOrder?.length || entry.turns.length < 2) continue;
-      const order = entry.messageOrder;
-      entry.turns.sort((a, b) => {
-        const ai = order.indexOf(a.msgId), bi = order.indexOf(b.msgId);
-        if (ai === -1 && bi === -1) return (a.timestamp ?? 0) - (b.timestamp ?? 0);
+    var allKeys = Object.keys(store);
+    for (var ak = 0; ak < allKeys.length; ak++) {
+      var ae = store[allKeys[ak]];
+      if (!ae.messageOrder || !ae.messageOrder.length || ae.turns.length < 2) continue;
+      var order = ae.messageOrder;
+      ae.turns.sort(function (a, b) {
+        var ai = order.indexOf(a.msgId), bi = order.indexOf(b.msgId);
+        if (ai === -1 && bi === -1) return (a.timestamp || 0) - (b.timestamp || 0);
         if (ai === -1) return 1; if (bi === -1) return -1;
         return ai - bi;
       });
     }
 
     saveStore(store);
-    console.debug(`[notion-ai-scraper] sync: ${Object.keys(threads ?? {}).length} thread(s), ${Object.keys(messages ?? {}).length} msg(s)`);
+    console.debug("[notion-ai-scraper] sync: " + Object.keys(threads).length + " thread(s), " + Object.keys(messages).length + " msg(s)");
   }
+
+  // ── Fetch intercept (via unsafeWindow) ────────────────────────────────────
+
+  var _fetch = unsafeWindow.fetch.bind(unsafeWindow);
+
+  unsafeWindow.fetch = async function (input, init) {
+    var url = typeof input === "string" ? input : (input && input.url) || "";
+    var path = "";
+    try { path = new URL(url, unsafeWindow.location.origin).pathname; } catch (e) {}
+
+    if (path === LIVE_PATH) {
+      var reqBody = null;
+      try {
+        var raw = (init && init.body) || (input instanceof unsafeWindow.Request ? await input.clone().text() : null);
+        if (raw) reqBody = JSON.parse(raw);
+      } catch (e) {}
+      var response = await _fetch(input, init);
+      handleNDJSONStream(response.clone(), {
+        userMessage: extractUserMessage(reqBody),
+        traceId: reqBody && reqBody.traceId,
+        spaceId: reqBody && reqBody.spaceId,
+      });
+      return response;
+    }
+
+    if (path === SYNC_PATH) {
+      var syncResponse = await _fetch(input, init);
+      syncResponse.clone().json().then(function (data) {
+        try { handleSyncResponse(data); } catch (err) {
+          console.warn("[notion-ai-scraper] sync parse error:", err);
+        }
+      }).catch(function () {});
+      return syncResponse;
+    }
+
+    return _fetch(input, init);
+  };
 
   // ── Menu commands ─────────────────────────────────────────────────────────
 
   function toMarkdown(store) {
     return Object.values(store)
-      .filter((c) => c.turns?.length > 0)
-      .map((c) => {
-        const title = c.title ? ` — ${c.title}` : "";
-        const model = c.model ? ` (${c.model})` : "";
-        const header = `# Notion AI Chat${title}${model}\n_ID: ${c.id}_\n_Captured: ${new Date(c.createdAt).toISOString()}_\n\n`;
-        const body = (c.turns ?? [])
-          .map((t) => `**${t.role === "assistant" ? "Notion AI" : "You"}**\n\n${t.content}`)
+      .filter(function (c) { return c.turns && c.turns.length > 0; })
+      .map(function (c) {
+        var title = c.title ? " \u2014 " + c.title : "";
+        var model = c.model ? " (" + c.model + ")" : "";
+        var header = "# Notion AI Chat" + title + model + "\n_ID: " + c.id + "_\n_Captured: " + new Date(c.createdAt).toISOString() + "_\n\n";
+        var body = (c.turns || [])
+          .map(function (t) { return "**" + (t.role === "assistant" ? "Notion AI" : "You") + "**\n\n" + t.content; })
           .join("\n\n---\n\n");
-        let toolSection = "";
-        if (c.toolCalls?.length) {
+        var toolSection = "";
+        if (c.toolCalls && c.toolCalls.length) {
           toolSection = "\n\n---\n\n<details><summary>Tool calls</summary>\n\n" +
-            c.toolCalls.map((tc) => `- **${tc.tool}**: \`${JSON.stringify(tc.input).slice(0, 200)}\``).join("\n") +
+            c.toolCalls.map(function (tc) { return "- **" + tc.tool + "**: `" + JSON.stringify(tc.input).slice(0, 200) + "`"; }).join("\n") +
             "\n</details>";
         }
         return header + body + toolSection;
@@ -384,44 +362,49 @@
   }
 
   function downloadText(content, filename, mime) {
-    const blob = new Blob([content], { type: mime });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
+    var blob = new Blob([content], { type: mime });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
     a.href = url; a.download = filename; a.click();
     URL.revokeObjectURL(url);
   }
 
-  GM_registerMenuCommand("Export All → Markdown", () => {
-    const store = loadStore();
-    const withTurns = Object.values(store).filter((c) => c.turns?.length);
+  GM_registerMenuCommand("Export All \u2192 Markdown", function () {
+    var store = loadStore();
+    var withTurns = Object.values(store).filter(function (c) { return c.turns && c.turns.length; });
     if (!withTurns.length) { alert("No conversations captured yet."); return; }
-    downloadText(toMarkdown(store), `notion-ai-${Date.now()}.md`, "text/markdown");
+    downloadText(toMarkdown(store), "notion-ai-" + Date.now() + ".md", "text/markdown");
   });
 
-  GM_registerMenuCommand("Export All → JSON", () => {
-    const store = loadStore();
-    const withTurns = Object.values(store).filter((c) => c.turns?.length);
+  GM_registerMenuCommand("Export All \u2192 JSON", function () {
+    var store = loadStore();
+    var withTurns = Object.values(store).filter(function (c) { return c.turns && c.turns.length; });
     if (!withTurns.length) { alert("No conversations captured yet."); return; }
-    const data = withTurns.map(({ _processedMsgIds, messageOrder, ...clean }) => clean);
-    downloadText(JSON.stringify(data, null, 2), `notion-ai-${Date.now()}.json`, "application/json");
+    var data = withTurns.map(function (c) {
+      var clean = Object.assign({}, c);
+      delete clean._processedMsgIds;
+      delete clean.messageOrder;
+      return clean;
+    });
+    downloadText(JSON.stringify(data, null, 2), "notion-ai-" + Date.now() + ".json", "application/json");
   });
 
-  GM_registerMenuCommand("Clear captured conversations", () => {
+  GM_registerMenuCommand("Clear captured conversations", function () {
     if (confirm("Clear all captured Notion AI conversations?")) { saveStore({}); alert("Cleared."); }
   });
 
-  GM_registerMenuCommand("Show capture stats", () => {
-    const store = loadStore();
-    const convos = Object.values(store).filter((c) => c.turns?.length);
-    const turns = convos.reduce((n, c) => n + (c.turns?.length ?? 0), 0);
-    const models = [...new Set(convos.map((c) => c.model).filter(Boolean))];
-    const titles = convos.map((c) => c.title).filter(Boolean).slice(0, 5);
+  GM_registerMenuCommand("Show capture stats", function () {
+    var store = loadStore();
+    var convos = Object.values(store).filter(function (c) { return c.turns && c.turns.length; });
+    var turns = convos.reduce(function (n, c) { return n + (c.turns ? c.turns.length : 0); }, 0);
+    var models = convos.map(function (c) { return c.model; }).filter(Boolean).filter(function (v, i, a) { return a.indexOf(v) === i; });
+    var titles = convos.map(function (c) { return c.title; }).filter(Boolean).slice(0, 5);
     alert(
-      `${convos.length} conversation(s), ${turns} total turn(s)\n` +
-      `Models: ${models.join(", ") || "unknown"}\n` +
-      (titles.length ? `Recent: ${titles.join(", ")}` : "")
+      convos.length + " conversation(s), " + turns + " total turn(s)\n" +
+      "Models: " + (models.join(", ") || "unknown") + "\n" +
+      (titles.length ? "Recent: " + titles.join(", ") : "")
     );
   });
 
-  console.log("[notion-ai-scraper] v0.3.1 active — watching live + historical chat");
+  console.log("[notion-ai-scraper] v0.3.2 active \u2014 watching live + historical chat");
 })();
