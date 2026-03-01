@@ -59,7 +59,7 @@
     const messages = {};
     for (const [id, rec] of Object.entries(rm.thread_message ?? {})) {
       const val = rec?.value?.value ?? rec?.value ?? {};
-      if (val.step) messages[id] = val;
+      if (val.step || val.role) messages[id] = val;
     }
 
     if (!Object.keys(threads).length && !Object.keys(messages).length) return;
@@ -91,7 +91,7 @@
 
     // Process thread_messages into turns
     for (const [msgId, msg] of Object.entries(messages)) {
-      const step = msg.step;
+      const step = msg.step ?? {};
       const parentThread = msg.parent_id;
       const key = `thread-${parentThread}`;
 
@@ -116,7 +116,15 @@
       if (entry._processedMsgIds?.includes(msgId)) continue;
       if (!entry._processedMsgIds) entry._processedMsgIds = [];
 
-      if (step.type === "agent-inference") {
+      if (!step.type && msg.role === "editor") {
+        entry.turns.push({
+          role: "user",
+          content: "(user message)",
+          msgId,
+          timestamp: msg.created_time ?? Date.now(),
+        });
+        entry._processedMsgIds.push(msgId);
+      } else if (step.type === "agent-inference") {
         const turn = extractInferenceTurn(step);
         if (turn) {
           turn.msgId = msgId;

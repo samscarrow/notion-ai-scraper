@@ -167,7 +167,7 @@ async function handleSyncRecords(threads, messages) {
 
   // Process thread_messages into turns
   for (const [msgId, msg] of Object.entries(messages ?? {})) {
-    const step = msg.step;
+    const step = msg.step ?? {};
     const parentThread = msg.parent_id;
     const key = `thread-${parentThread}`;
 
@@ -189,7 +189,16 @@ async function handleSyncRecords(threads, messages) {
     if (!entry._processedMsgIds) entry._processedMsgIds = [];
     if (entry._processedMsgIds.includes(msgId)) continue;
 
-    if (step.type === "agent-inference") {
+    if (!step.type && msg.role === "editor") {
+      // User messages in historical data have role:"editor" but no content
+      entry.turns.push({
+        role: "user",
+        content: "(user message)",
+        msgId,
+        timestamp: msg.created_time ?? Date.now(),
+      });
+      entry._processedMsgIds.push(msgId);
+    } else if (step.type === "agent-inference") {
       const turn = extractInferenceTurn(step);
       if (turn) {
         turn.msgId = msgId;

@@ -58,7 +58,7 @@
     const messages = {};
     for (const [id, rec] of Object.entries(rm.thread_message ?? {})) {
       const val = rec?.value?.value ?? rec?.value ?? {};
-      if (val.step) messages[id] = val;
+      if (val.step || val.role) messages[id] = val;
     }
 
     if (!Object.keys(threads).length && !Object.keys(messages).length) return;
@@ -195,7 +195,13 @@
     if (path === SYNC_PATH) {
       const response = await _fetch(input, init);
       response.clone().json().then((data) => {
-        try { handleSyncResponse(data); } catch {}
+        try {
+          const rm = data?.recordMap ?? {};
+          const hasThread = !!rm.thread;
+          const hasMsg = !!rm.thread_message;
+          if (hasThread || hasMsg) console.debug("[notion-ai-scraper] sync response has thread data:", { thread: Object.keys(rm.thread ?? {}).length, thread_message: Object.keys(rm.thread_message ?? {}).length });
+          handleSyncResponse(data);
+        } catch (e) { console.warn("[notion-ai-scraper] handleSyncResponse error:", e); }
       }).catch(() => {});
       return response;
     }
@@ -228,6 +234,10 @@
   // ── Message bridge ─────────────────────────────────────────────────────────
 
   function sendToBackground(payload) {
-    try { browser.runtime.sendMessage(payload).catch(() => {}); } catch {}
+    console.debug("[notion-ai-scraper] sending to background:", payload.type,
+      payload.type === "SYNC_RECORDS"
+        ? `threads=${Object.keys(payload.threads ?? {}).length} messages=${Object.keys(payload.messages ?? {}).length}`
+        : "");
+    try { browser.runtime.sendMessage(payload).catch((err) => console.warn("[notion-ai-scraper] sendMessage error:", err)); } catch (e) { console.warn("[notion-ai-scraper] sendMessage exception:", e); }
   }
 })();
