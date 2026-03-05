@@ -3,3 +3,15 @@
 .playwright-mcp/
 node_modules/
 web-ext-artifacts/
+__pycache__/
+.venv/
+cli/.venv/
+cli/__pycache__/
+cli/agents.yaml
+test/__pycache__/
+.claude/
+.mcp.json
+.amo-upload-uuid
+.web-ext-ignore
+conversations.csv
+*.txt
