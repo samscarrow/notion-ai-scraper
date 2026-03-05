@@ -1,11 +1,11 @@
 // ==UserScript==
 // @name         Notion AI Chat Scraper
-// @namespace    https://github.com/samscarrow/notion-ai-scraper
+// @namespace    https://github.com/git-scarrow/notion-forge
 // @version      0.3.2
 // @description  Export your Notion AI chat conversations as Markdown or JSON. Captures live streaming responses and full historical threads, including chain-of-thought, tool calls, and model info.
 // @author       samscarrow
-// @homepageURL  https://github.com/samscarrow/notion-ai-scraper
-// @supportURL   https://github.com/samscarrow/notion-ai-scraper/issues
+// @homepageURL  https://github.com/git-scarrow/notion-forge
+// @supportURL   https://github.com/git-scarrow/notion-forge/issues
 // @match        https://www.notion.so/*
 // @match        https://notion.so/*
 // @grant        GM_setValue
@@ -172,7 +172,7 @@
     if (fc.length) entry.toolCalls = entry.toolCalls.concat(fc);
     entry.updatedAt = Date.now();
     saveStore(store);
-    console.debug("[notion-ai-scraper] live: trace " + key + ", turns=" + entry.turns.length);
+    console.debug("[notion-forge] live: trace " + key + ", turns=" + entry.turns.length);
   }
 
   // ── NDJSON stream reader ──────────────────────────────────────────────────
@@ -198,7 +198,7 @@
       }
       if (buffer.trim()) { try { lines.push(JSON.parse(buffer.trim())); } catch (e) {} }
     } catch (err) {
-      console.warn("[notion-ai-scraper] NDJSON read error:", err);
+      console.warn("[notion-forge] NDJSON read error:", err);
     }
     if (lines.length) handleTranscript(lines, meta);
   }
@@ -224,6 +224,7 @@
     if (!Object.keys(threads).length && !Object.keys(messages).length) return;
 
     var store = loadStore();
+    var touchedKeys = [];
 
     var tids = Object.keys(threads);
     for (var ti = 0; ti < tids.length; ti++) {
@@ -234,12 +235,15 @@
           id: key, threadId: threadId, title: (thread.data && thread.data.title) || null,
           spaceId: thread.space_id, model: null, turns: [], toolCalls: [],
           createdAt: thread.created_time || Date.now(), messageOrder: thread.messages,
+          createdById: thread.created_by_id, updatedById: thread.updated_by_id,
         };
       } else {
         store[key].messageOrder = thread.messages;
         if (thread.data && thread.data.title) store[key].title = thread.data.title;
+        if (thread.updated_by_id) store[key].updatedById = thread.updated_by_id;
       }
       store[key].updatedAt = Date.now();
+      if (touchedKeys.indexOf(key) === -1) touchedKeys.push(key);
     }
 
     var mids = Object.keys(messages);
@@ -270,17 +274,19 @@
         }
         var content = rParts.join("\n").trim();
         if (content) {
-          var aturn = { role: "assistant", content: content, msgId: msgId, timestamp: msg.created_time || Date.now() };
+          var aturn = { role: "assistant", content: content, msgId: msgId, timestamp: msg.created_time || Date.now(), createdById: msg.created_by_id };
           if (tParts.length) aturn.thinking = tParts.join("\n");
           if (stepModel) { aturn.model = stepModel; entry.model = stepModel; }
           entry.turns.push(aturn);
+          if (touchedKeys.indexOf(mkey) === -1) touchedKeys.push(mkey);
         }
         entry._processedMsgIds.push(msgId);
       } else if (step.type === "user" || step.type === "human") {
         var ucontent = extractRichText(step.value);
         if (ucontent) {
-          entry.turns.push({ role: "user", content: ucontent, msgId: msgId, timestamp: msg.created_time || Date.now() });
+          entry.turns.push({ role: "user", content: ucontent, msgId: msgId, timestamp: msg.created_time || Date.now(), createdById: msg.created_by_id });
           entry._processedMsgIds.push(msgId);
+          if (touchedKeys.indexOf(mkey) === -1) touchedKeys.push(mkey);
         }
       } else {
         entry._processedMsgIds.push(msgId);
@@ -288,10 +294,10 @@
       entry.updatedAt = Date.now();
     }
 
-    var allKeys = Object.keys(store);
-    for (var ak = 0; ak < allKeys.length; ak++) {
-      var ae = store[allKeys[ak]];
-      if (!ae.messageOrder || !ae.messageOrder.length || ae.turns.length < 2) continue;
+    // Sort and merge ONLY for touched entries
+    for (var tk = 0; tk < touchedKeys.length; tk++) {
+      var ae = store[touchedKeys[tk]];
+      if (!ae || !ae.messageOrder || !ae.messageOrder.length || ae.turns.length < 2) continue;
       var order = ae.messageOrder;
       ae.turns.sort(function (a, b) {
         var ai = order.indexOf(a.msgId), bi = order.indexOf(b.msgId);
@@ -299,10 +305,12 @@
         if (ai === -1) return 1; if (bi === -1) return -1;
         return ai - bi;
       });
+      ae.turns = mergeConsecutiveTurns(ae.turns);
     }
 
+
     saveStore(store);
-    console.debug("[notion-ai-scraper] sync: " + Object.keys(threads).length + " thread(s), " + Object.keys(messages).length + " msg(s)");
+    console.debug("[notion-forge] sync: " + Object.keys(threads).length + " thread(s), " + Object.keys(messages).length + " msg(s)");
   }
 
   // ── Fetch intercept (via unsafeWindow) ────────────────────────────────────
@@ -333,7 +341,7 @@
       var syncResponse = await _fetch(input, init);
       syncResponse.clone().json().then(function (data) {
         try { handleSyncResponse(data); } catch (err) {
-          console.warn("[notion-ai-scraper] sync parse error:", err);
+          console.warn("[notion-forge] sync parse error:", err);
         }
       }).catch(function () {});
       return syncResponse;
@@ -409,5 +417,5 @@
     );
   });
 
-  console.log("[notion-ai-scraper] v0.3.2 active \u2014 watching live + historical chat");
+  console.log("[notion-forge] v0.3.2 active \u2014 watching live + historical chat");
 })();

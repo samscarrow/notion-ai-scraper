@@ -1,14 +1,18 @@
 {
   "manifest_version": 3,
   "name": "Notion AI Chat Scraper",
-  "version": "0.5.0",
+  "version": "0.7.0",
   "description": "Captures and exports Notion AI chat conversations as Markdown or JSON.",
 
   "permissions": [
     "storage",
     "alarms",
     "activeTab",
-    "tabs"
+    "tabs",
+    "scripting",
+    "webRequest",
+    "webRequestBlocking",
+    "webRequestFilterResponse"
   ],
 
   "host_permissions": [
@@ -20,22 +24,6 @@
     "scripts": ["background/service-worker.js"],
     "type": "module"
   },
-
-  "content_scripts": [
-    {
-      "matches": ["https://www.notion.so/*", "https://notion.so/*"],
-      "js": ["content/bridge.js"],
-      "run_at": "document_start",
-      "all_frames": false
-    }
-  ],
-
-  "web_accessible_resources": [
-    {
-      "resources": ["content/interceptor.js"],
-      "matches": ["https://www.notion.so/*", "https://notion.so/*"]
-    }
-  ],
 
   "action": {
     "default_popup": "popup/popup.html",
@@ -55,7 +43,7 @@
 
   "browser_specific_settings": {
     "gecko": {
-      "id": "notion-ai-scraper@local",
+      "id": "notion-forge@local",
       "strict_min_version": "112.0"
     }
   }
