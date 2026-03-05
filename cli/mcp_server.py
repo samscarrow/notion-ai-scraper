@@ -10,6 +10,7 @@ Usage:
   claude mcp add notion-agents -- python cli/mcp_server.py
 """
 
+import functools
 import json
 import os
 import re
@@ -46,6 +47,7 @@ _collection_lock = threading.Lock()
 
 _auth_cache: tuple[str, str | None] | None = None
 _auth_cache_time: float = 0
+_auth_db_mtime: float = 0   # mtime of Firefox cookies.sqlite at last read
 _auth_lock = threading.Lock()
 _AUTH_TTL = 300  # seconds — re-read cookies every 5 minutes
 
@@ -80,16 +82,74 @@ def _save_registry(registry: dict) -> None:
         _registry_mtime = os.path.getmtime(AGENTS_YAML)
 
 
-def _get_auth() -> tuple[str, str | None]:
-    """Return (token_v2, user_id) with TTL caching."""
-    global _auth_cache, _auth_cache_time
+def _get_auth(force: bool = False) -> tuple[str, str | None]:
+    """Return (token_v2, user_id) with TTL + mtime caching.
+
+    Re-reads Firefox cookies if:
+    - force=True (e.g. after a 401)
+    - TTL expired
+    - Firefox's cookies.sqlite has been modified since last read (user re-logged in)
+    """
+    global _auth_cache, _auth_cache_time, _auth_db_mtime
     now = time.monotonic()
     with _auth_lock:
-        if _auth_cache is not None and (now - _auth_cache_time) < _AUTH_TTL:
-            return _auth_cache
+        if not force and _auth_cache is not None:
+            # Check mtime before trusting TTL
+            try:
+                db_path = cookie_extract.get_firefox_cookies_db()
+                current_mtime = os.path.getmtime(db_path)
+            except Exception:
+                current_mtime = _auth_db_mtime  # can't stat, use cached
+
+            db_unchanged = (current_mtime == _auth_db_mtime)
+            ttl_valid = (now - _auth_cache_time) < _AUTH_TTL
+            if db_unchanged and ttl_valid:
+                return _auth_cache
+
         _auth_cache = cookie_extract.get_auth()
         _auth_cache_time = now
+        try:
+            db_path = cookie_extract.get_firefox_cookies_db()
+            _auth_db_mtime = os.path.getmtime(db_path)
+        except Exception:
+            pass
         return _auth_cache
+
+
+def _invalidate_auth() -> None:
+    """Force next _get_auth() call to re-read Firefox cookies."""
+    global _auth_cache
+    with _auth_lock:
+        _auth_cache = None
+
+
+def _with_auth_retry(fn):
+    """Call fn(token, user_id). On PermissionError (401/403), refresh auth once and retry."""
+    token, user_id = _get_auth()
+    try:
+        return fn(token, user_id)
+    except PermissionError:
+        _invalidate_auth()
+        token, user_id = _get_auth(force=True)
+        return fn(token, user_id)
+
+
+def auth_retry(tool_fn):
+    """Decorator: catch PermissionError from any MCP tool, invalidate auth, retry once."""
+    @functools.wraps(tool_fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return tool_fn(*args, **kwargs)
+        except PermissionError as e:
+            _invalidate_auth()
+            try:
+                return tool_fn(*args, **kwargs)
+            except PermissionError:
+                raise PermissionError(
+                    f"Notion authentication failed after re-reading cookies. "
+                    f"Open Firefox and log into Notion, then retry. ({e})"
+                )
+    return wrapper
 
 
 def _get_agent_config(name: str) -> dict:
@@ -131,6 +191,7 @@ def _name_to_key(name: str) -> str:
 # ── Tools ────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
+@auth_retry
 def list_agents() -> str:
     """List all registered Notion AI agents from agents.yaml."""
     registry = _load_registry()
@@ -144,6 +205,7 @@ def list_agents() -> str:
 
 
 @mcp.tool()
+@auth_retry
 def list_workspace_agents() -> str:
     """
     Enumerate all AI agents in the Notion workspace directly from the API.
@@ -167,6 +229,7 @@ def list_workspace_agents() -> str:
 
 
 @mcp.tool()
+@auth_retry
 def sync_registry() -> str:
     """
     Sync agents.yaml with all agents currently in the Notion workspace.
@@ -208,6 +271,7 @@ def sync_registry() -> str:
 
 
 @mcp.tool()
+@auth_retry
 def dump_agent(agent_name: str) -> str:
     """
     Fetch the live instructions of a Notion AI agent as Markdown.
@@ -226,6 +290,7 @@ def dump_agent(agent_name: str) -> str:
 
 
 @mcp.tool()
+@auth_retry
 def update_agent(
     agent_name: str,
     instructions_markdown: str,
@@ -269,6 +334,7 @@ def update_agent(
 
 
 @mcp.tool()
+@auth_retry
 def publish_agent(agent_name: str) -> str:
     """Publish a Notion AI agent without changing its instructions."""
     cfg = _get_agent_config(agent_name)
@@ -282,6 +348,7 @@ def publish_agent(agent_name: str) -> str:
 
 
 @mcp.tool()
+@auth_retry
 def discover_agent(workflow_url_or_id: str) -> str:
     """
     Discover a Notion AI agent's metadata from a URL or workflow ID.
@@ -318,6 +385,7 @@ def discover_agent(workflow_url_or_id: str) -> str:
 
 
 @mcp.tool()
+@auth_retry
 def register_agent(
     name: str,
     workflow_id: str,
@@ -353,6 +421,7 @@ def register_agent(
 
 
 @mcp.tool()
+@auth_retry
 def remove_agent(name: str) -> str:
     """Remove a Notion AI agent from agents.yaml."""
     registry = _load_registry()
@@ -442,6 +511,7 @@ def _conversation_to_markdown(convo: dict) -> str:
 
 
 @mcp.tool()
+@auth_retry
 def get_conversation(thread: str, format: str = "json") -> str:
     """
     Fetch a Notion AI conversation and return its full transcript.
@@ -582,6 +652,7 @@ def _format_agent_triggers(triggers: list[dict]) -> list[str]:
 
 
 @mcp.tool()
+@auth_retry
 def get_agent_triggers(agent: str = "all") -> str:
     """
     Show trigger configuration for Notion AI custom agents.
@@ -617,6 +688,7 @@ def get_agent_triggers(agent: str = "all") -> str:
 
 
 @mcp.tool()
+@auth_retry
 def get_db_automations(db: str) -> str:
     """
     List all native automations configured on a Notion database.
@@ -676,6 +748,7 @@ def get_db_automations(db: str) -> str:
 
 
 @mcp.tool()
+@auth_retry
 def get_agent_tools(agent_name: str) -> str:
     """
     Show the full tool/module configuration for a Notion AI agent.
@@ -756,6 +829,7 @@ def get_agent_tools(agent_name: str) -> str:
 
 
 @mcp.tool()
+@auth_retry
 def add_agent_mcp_server(
     agent_name: str,
     server_name: str,
@@ -805,6 +879,7 @@ def add_agent_mcp_server(
 
 
 @mcp.tool()
+@auth_retry
 def remove_agent_mcp_server(
     agent_name: str,
     server_name: str,
@@ -846,6 +921,7 @@ def remove_agent_mcp_server(
 
 
 @mcp.tool()
+@auth_retry
 def set_agent_model(
     agent_name: str,
     model: str,
