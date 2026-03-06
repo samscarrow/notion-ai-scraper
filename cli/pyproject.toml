@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "mcp>=1.10.0",
     "pyyaml",
+    "oracledb",
 ]
 
 [project.scripts]
