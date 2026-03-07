@@ -12,6 +12,7 @@ import json
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from typing import Any
 
 BASE_URL = "https://api.notion.com/v1"
@@ -20,6 +21,11 @@ MAX_RETRIES = 3
 BACKOFF_BASE = 1
 RICH_TEXT_LIMIT = 1900
 APPEND_BLOCK_LIMIT = 100
+
+
+def now_iso() -> str:
+    """Return the current time as an ISO-8601 string for Notion date properties."""
+    return datetime.now(timezone.utc).isoformat()
 
 
 def split_rich_text(text: str, limit: int = RICH_TEXT_LIMIT) -> list[str]:
@@ -104,6 +110,28 @@ class NotionAPIClient:
 
         raise RuntimeError(f"Notion API request failed after {MAX_RETRIES} attempts: {last_err}")
 
+    def update_page(self, page_id: str, properties: dict[str, Any]) -> dict[str, Any]:
+        return self._request("PATCH", f"pages/{page_id}", {"properties": properties})
+
+    def atomic_consume(
+        self,
+        page_id: str,
+        trigger_property: str,
+        timestamp_property: str,
+        extra_properties: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """
+        TLA+ Transition: s'.WI[i].Trigger <- False, s'.WI[i].ConsumedAt <- now()
+        Enforces that the signal is cleared before work begins.
+        """
+        properties: dict[str, Any] = {
+            trigger_property: {"checkbox": False},
+            timestamp_property: {"date": {"start": now_iso()}},
+        }
+        if extra_properties:
+            properties.update(extra_properties)
+        return self.update_page(page_id, properties=properties)
+
     def create_page(self, parent: dict[str, Any], properties: dict[str, Any]) -> dict[str, Any]:
         return self._request(
             "POST",
@@ -120,9 +148,9 @@ class NotionAPIClient:
                 {"children": chunk},
             )
 
-    def query_data_source(
+    def query_database(
         self,
-        data_source_id: str,
+        database_id: str,
         filter_payload: dict[str, Any] | None = None,
         start_cursor: str | None = None,
         page_size: int = 100,
@@ -132,19 +160,19 @@ class NotionAPIClient:
             payload["filter"] = filter_payload
         if start_cursor is not None:
             payload["start_cursor"] = start_cursor
-        return self._request("POST", f"data_sources/{data_source_id}/query", payload)
+        return self._request("POST", f"databases/{database_id}/query", payload)
 
     def query_all(
         self,
-        data_source_id: str,
+        database_id: str,
         filter_payload: dict[str, Any] | None = None,
         page_size: int = 100,
     ) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         cursor: str | None = None
         while True:
-            page = self.query_data_source(
-                data_source_id,
+            page = self.query_database(
+                database_id,
                 filter_payload=filter_payload,
                 start_cursor=cursor,
                 page_size=page_size,

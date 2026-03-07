@@ -188,6 +188,82 @@ def _name_to_key(name: str) -> str:
     return re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_')
 
 
+def _build_update_message(agent_name: str, stats: dict) -> str:
+    """Format the human-readable update summary for an instructions write."""
+    parts = []
+    if stats["unchanged"]:
+        parts.append(f"{stats['unchanged']} unchanged")
+    if stats["updated"]:
+        parts.append(f"{stats['updated']} updated")
+    if stats["inserted"]:
+        parts.append(f"{stats['inserted']} inserted")
+    if stats["deleted"]:
+        parts.append(f"{stats['deleted']} deleted")
+    detail = ", ".join(parts) if parts else "no changes"
+    return f"Updated {agent_name} ({detail}, {stats['ops']} ops in 1 tx)."
+
+
+def _build_thread_cleanup_message(result: dict) -> str:
+    """Summarize any stale-thread cleanup performed after publish."""
+    parts: list[str] = []
+    count = result.get("archivedThreadCount")
+    if count is not None:
+        noun = "chat" if count == 1 else "chats"
+        parts.append(f"Archived {count} stale {noun}.")
+    warning = result.get("threadCleanupWarning")
+    if warning:
+        parts.append(f"Thread cleanup warning: {warning}")
+    return " ".join(parts)
+
+
+def _build_publish_message(agent_name: str, result: dict, *, standalone: bool = False) -> str:
+    """Format a publish result, including post-publish stale-thread cleanup."""
+    if "warning" in result:
+        msg = f"Publish {agent_name}: {result['warning']}."
+        detail = result.get("detail")
+        if detail:
+            msg += f" {detail}"
+    else:
+        version = result.get("version", "?")
+        if standalone:
+            artifact = result.get("workflowArtifactId", "?")
+            msg = f"Published {agent_name} — version: {version}, artifact: {artifact}."
+        else:
+            msg = f"Published v{version}."
+
+    cleanup = _build_thread_cleanup_message(result)
+    if cleanup:
+        msg += f" {cleanup}"
+    return msg
+
+
+def _update_agent_impl(
+    agent_name: str,
+    instructions_markdown: str,
+    publish: bool,
+) -> str:
+    """Shared implementation for inline and file-based agent instruction updates."""
+    cfg = _get_agent_config(agent_name)
+    token, user_id = _get_auth()
+
+    new_blocks = block_builder.markdown_to_blocks(instructions_markdown)
+    if not new_blocks:
+        return "Error: markdown produced no blocks. Check the content."
+
+    stats = notion_client.diff_replace_block_content(
+        cfg["block_id"], cfg["space_id"], new_blocks, token, user_id,
+    )
+    msg = _build_update_message(agent_name, stats)
+
+    if publish:
+        result = notion_client.publish_agent(
+            cfg["workflow_id"], cfg["space_id"], token, user_id,
+        )
+        msg += f" {_build_publish_message(agent_name, result)}"
+
+    return msg
+
+
 # ── Tools ────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
@@ -301,36 +377,24 @@ def update_agent(
     Optionally publishes the agent afterward (default: True).
     Mentions use {{page:uuid}} syntax.
     """
-    cfg = _get_agent_config(agent_name)
-    token, user_id = _get_auth()
+    return _update_agent_impl(agent_name, instructions_markdown, publish)
 
-    new_blocks = block_builder.markdown_to_blocks(instructions_markdown)
-    if not new_blocks:
-        return "Error: markdown produced no blocks. Check the content."
 
-    stats = notion_client.diff_replace_block_content(
-        cfg["block_id"], cfg["space_id"], new_blocks, token, user_id,
-    )
-    parts = []
-    if stats["unchanged"]:
-        parts.append(f"{stats['unchanged']} unchanged")
-    if stats["updated"]:
-        parts.append(f"{stats['updated']} updated")
-    if stats["inserted"]:
-        parts.append(f"{stats['inserted']} inserted")
-    if stats["deleted"]:
-        parts.append(f"{stats['deleted']} deleted")
-    detail = ", ".join(parts) if parts else "no changes"
-    msg = f"Updated {agent_name} ({detail}, {stats['ops']} ops in 1 tx)."
-
-    if publish:
-        result = notion_client.publish_agent(
-            cfg["workflow_id"], cfg["space_id"], token, user_id,
-        )
-        version = result.get("version", "?")
-        msg += f" Published v{version}."
-
-    return msg
+@mcp.tool()
+@auth_retry
+def update_agent_from_file(
+    agent_name: str,
+    markdown_path: str,
+    publish: bool = True,
+) -> str:
+    """
+    Replace a Notion AI agent's instructions from a local Markdown file path.
+    Useful when the caller wants a short tool request instead of inlining the
+    full markdown body in the MCP arguments.
+    """
+    with open(markdown_path, encoding="utf-8") as f:
+        instructions_markdown = f.read()
+    return _update_agent_impl(agent_name, instructions_markdown, publish)
 
 
 @mcp.tool()
@@ -342,9 +406,7 @@ def publish_agent(agent_name: str) -> str:
     result = notion_client.publish_agent(
         cfg["workflow_id"], cfg["space_id"], token, user_id,
     )
-    version = result.get("version", "?")
-    artifact = result.get("workflowArtifactId", "?")
-    return f"Published {agent_name} — version: {version}, artifact: {artifact}"
+    return _build_publish_message(agent_name, result, standalone=True)
 
 
 @mcp.tool()
@@ -724,9 +786,12 @@ def get_db_automations(db: str) -> str:
         trigger = a.get("trigger") or {}
         event = trigger.get("event", {})
         if event.get("pagePropertiesEdited"):
-            filters = event["pagePropertiesEdited"].get("all", [])
+            ppe = event["pagePropertiesEdited"]
+            filter_type = ppe.get("type", "all")
+            filters = ppe.get("all", []) or ppe.get("some", [])
             props = [f"{_prop_name(f['property'])} ({f['filter']['operator']})" for f in filters]
-            lines.append(f"   Trigger: pagePropertiesEdited — {', '.join(props)}")
+            qualifier = f" [{filter_type}]" if filter_type != "all" else ""
+            lines.append(f"   Trigger: pagePropertiesEdited{qualifier} — {', '.join(props)}")
         elif event.get("pagesAdded"):
             lines.append("   Trigger: pagesAdded")
         else:
@@ -874,7 +939,7 @@ def add_agent_mcp_server(
         result = notion_client.publish_agent(
             cfg["workflow_id"], cfg["space_id"], token, user_id,
         )
-        msg += f" Published v{result.get('version', '?')}."
+        msg += f" {_build_publish_message(agent_name, result)}"
     return msg
 
 
@@ -916,7 +981,7 @@ def remove_agent_mcp_server(
         result = notion_client.publish_agent(
             cfg["workflow_id"], cfg["space_id"], token, user_id,
         )
-        msg += f" Published v{result.get('version', '?')}."
+        msg += f" {_build_publish_message(agent_name, result)}"
     return msg
 
 
@@ -944,6 +1009,9 @@ def set_agent_model(
         "opus 4.6": "avocado-froyo-medium",
         "sonnet": "almond-croissant-low",
         "sonnet 4.6": "almond-croissant-low",
+        "chatgpt": "oval-kumquat-medium",
+        "chatgpt 5.4": "oval-kumquat-medium",
+        "gpt 5.4": "oval-kumquat-medium",
         "auto": "auto",
     }
     model_type = aliases.get(model.lower().strip(), model.strip())
@@ -960,7 +1028,7 @@ def set_agent_model(
         result = notion_client.publish_agent(
             cfg["workflow_id"], cfg["space_id"], token, user_id,
         )
-        msg += f" Published v{result.get('version', '?')}."
+        msg += f" {_build_publish_message(agent_name, result)}"
     return msg
 
 

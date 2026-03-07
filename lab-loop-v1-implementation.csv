@@ -1,0 +1,29 @@
+Phase,Task,System,Asset,Description,Status
+0,Create Lab Audit Log DB,Notion,collection://f3a4d67a-5734-4ea4-908b-458f1c63f875,"Database under Lab page: Transition (title), Work Item (relation), Agent (select), From/To Status (select), Signal Consumed (select: DR/LR/Synth), Consumption Timestamp (date), Logged At (created_time)",Complete
+0,Create AGENT_STATE_LOG table,Oracle CHATSEARCH,AGENT_STATE_LOG,"Mirror table: LOG_ID (identity PK), WORK_ITEM_ID, WORK_ITEM_NAME, AGENT_NAME, FROM_STATUS, TO_STATUS, SIGNAL_BIT, CONSUMED_AT, LOGGED_AT. 3 indexes (work_item, agent, logged_at)",Complete
+0,Create VALID_STATE_TRANSITIONS table,Oracle CHATSEARCH,VALID_STATE_TRANSITIONS,"Reference table: 7 valid transitions encoding the TLA+ state machine (NotStarted->PromptReq, PromptReq->InProgress, InProgress->Done x2, Done->Inconclusive, InProgress->KillConditionMet x2)",Complete
+0,Add Return Consumed At property,Notion + Code,Work Items DB + github_return.py,New date property on Work Items; github_return.py now writes it alongside Status/LR/RunDate,Complete
+0,Add audit log write to webhook bridge,Code,github_return.py,Creates a Lab Audit Log row (InProgress->Done / Webhook Bridge / LR consumed) on every GitHub return. Non-fatal on failure,Complete
+0,Add now_iso() helper,Code,notion_api.py,datetime.now(timezone.utc).isoformat() helper for Notion date properties,Complete
+0,Update Dispatcher instructions,Notion Agent,fierce_mystic v15,Added Audit Log section: logs NotStarted->PromptReq with DR signal consumed,Complete
+0,Update Prompt Architect instructions,Notion Agent,prompt_architect (updated),Added Audit Log section: logs PromptReq->InProgress,Complete
+0,Update Librarian instructions,Notion Agent,librarian (updated),Added Audit Log section: logs Done->Done (Synthesized) with LR signal consumed,Complete
+0,Update Intake Clerk instructions,Notion Agent,legendary_curator v16,Added Audit Log section: logs InProgress->Done with LR signal,Complete
+0,Update Return Protocol Agent instructions,Notion Agent,return_protocol_agent v14,Added Audit Log section: logs Return->ProjectUpdate,Complete
+0,Update Lab Auditor — Section E,Notion Agent,lab_auditor (updated),"Added 6 TLA+ invariant checks: E.1 Signal Integrity, E.2 Dangling Pointer, E.3 Impossible States, E.4 Liveness/SLA, E.5 Audit Log Completeness, E.6 Scorecard",Complete
+0,Update Big Data Agent — Standing Checks,Notion Agent,big_data_agent v8,"Added 5 Oracle-side model checks: S.1 Interference Detection (60s window), S.2 Conflict Serialization (chain ordering), S.3 Illegal Transition Detection, S.4 Audit Log Health, S.5 Report Format",Complete
+1,Safety Invariant (Signal Integrity),Notion Auditor,Section E.1,"SQL: DRCA > 0 => DR = False; LRCA > 0 => LR = False. Checks both signal bits",Wired (runs on audit)
+1,Dangling Factory Pointer,Notion Auditor,Section E.2,"SQL: Status=Done AND Project.ActiveIssue != NULL. Proves Return Protocol failure",Wired (runs on audit)
+1,Impossible State Detection,Notion Auditor,Section E.3,"SQL: Done+DR=true OR NotStarted+Synth=true OR PromptReq+no Issue URL",Wired (runs on audit)
+1,Interference Detection,Oracle Big Data,Standing Check S.1,SQL: Two agents writing same Work Item within 60 seconds,Wired (runs on request)
+2,Conflict Serialization,Oracle Big Data,Standing Check S.2,"SQL: Verify DRCA < RunDate < ReturnConsumedAt < LRCA chain ordering. Reports VALID/INCOMPLETE/VIOLATION",Wired (runs on request)
+2,Illegal Transition Detection,Oracle Big Data,Standing Check S.3,SQL: Cross-reference AGENT_STATE_LOG against VALID_STATE_TRANSITIONS. Flags transitions outside the formal model,Wired (runs on request)
+3,Liveness / Forward Progress,Notion Auditor,Section E.4,"SQL: PromptReq > 24h, InProgress > 7d, Done+no synthesis > 3d",Wired (runs on audit)
+3,Audit Log Completeness,Notion Auditor,Section E.5,SQL: Terminal Work Items created after 2026-03-06 must have >= 2 audit log entries,Wired (runs on audit)
+3,Email alerting on stuck items,Notion Auditor,Not yet wired,Lab Auditor has Mail — could compose alert on E.4 violations,Designed (not implemented)
+4,Full State-Trace Audit,Oracle Big Data,Standing Check S.4,SQL: Coverage stats — total entries / unique work items / unique agents / per-agent breakdown / transition distribution,Wired (runs on request)
+0,Create Return Protocol Agent registry row,Notion Agent Registry,31ce7cc7-01d5-81c7-88eb-ca84f46762b6,"New Active row: DAG Rank 3, Trigger=@mention, Owns Lab Projects (Active Issue/Next Action) + Lab Audit Log. Reads Work Items + Lab Projects + Lab Control.",Complete
+0,Update Owns (Writes To) on 5 registry rows,Notion Agent Registry,"Fierce Mystic, Prompt Architect, Librarian, Legendary Curator, Lab Auditor","Added 'Lab Audit Log (transition rows)' to Owns field. Lab Auditor updated to read (not write) Lab Audit Log, and Reads From now includes Lab Audit Log.",Complete
+1,E.7 Unconsumed Signal Invariant,Notion Auditor,Section E.7,"Post-epoch (T0=2026-03-06) items with DR=true/DRCA=null or LR=true/LRCA=null flagged P0. Detects consume-first non-compliance",Wired (runs on audit)
+5,LL-EXP-1 Librarian consume-first non-compliance,Lab Work Item,LL-EXP-1,"Why does Librarian skip mandatory first step (clear LR + set LRCA)? Kill: 3 consecutive compliant runs OR 3 distinct prompt strategies fail",Work Item created
+5,LL-EXP-2 Automation 1 interference on Dispatch Via,Lab Work Item,LL-EXP-2,"Should Dispatch Via automation (DR=true + Status=Prompt Requested) be disabled, gated, or modeled? Kill: disable; 5 cycles no breakage = spurious",Work Item created

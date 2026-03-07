@@ -26,7 +26,6 @@ except ImportError:
     import notion_api
 
 WORK_ITEMS_DB_ID = "daeb64d4-e5a8-4a7b-b0dc-7555cbc3def6"
-WORK_ITEMS_DATA_SOURCE_ID = "94e7ae5f-19c8-4008-b9cd-66afc18ce087"
 CHATSEARCH_PROJECT_ID = "f7cca113-ad21-4261-a170-4a88441a0e66"
 DEFAULT_PROJECT_LABEL = "chatsearch"
 DEFAULT_STATE_PATH = Path(".cache/cycle_bridge_state.json")
@@ -69,7 +68,6 @@ class OracleConfig:
 class NotionConfig:
     token: str
     work_items_db_id: str = WORK_ITEMS_DB_ID
-    work_items_data_source_id: str = WORK_ITEMS_DATA_SOURCE_ID
     project_id: str | None = CHATSEARCH_PROJECT_ID
     project_label: str = DEFAULT_PROJECT_LABEL
     dispatch_via: str | None = None
@@ -79,9 +77,6 @@ class NotionConfig:
         return cls(
             token=os.environ["NOTION_TOKEN"],
             work_items_db_id=os.environ.get("WORK_ITEMS_DB_ID", WORK_ITEMS_DB_ID),
-            work_items_data_source_id=os.environ.get(
-                "WORK_ITEMS_DATA_SOURCE_ID", WORK_ITEMS_DATA_SOURCE_ID
-            ),
             project_id=os.environ.get("WORK_ITEMS_PROJECT_ID", CHATSEARCH_PROJECT_ID) or None,
             project_label=os.environ.get("WORK_ITEMS_PROJECT_LABEL", DEFAULT_PROJECT_LABEL),
             dispatch_via=os.environ.get("CYCLE_BRIDGE_DISPATCH_VIA") or None,
@@ -339,13 +334,13 @@ def fetch_recent_cycles(config: SyncConfig, state: SyncState | None) -> list[dic
 
 def find_existing_cycle_page(
     client: notion_api.NotionAPIClient,
-    data_source_id: str,
+    database_id: str,
     marker: str,
     cycle_id: int,
     project_label: str,
 ) -> dict[str, Any] | None:
     pages = client.query_all(
-        data_source_id,
+        database_id,
         filter_payload={"property": "Dataset", "rich_text": {"contains": marker}},
         page_size=10,
     )
@@ -353,7 +348,7 @@ def find_existing_cycle_page(
         return pages[0]
 
     titled_pages = client.query_all(
-        data_source_id,
+        database_id,
         filter_payload={
             "property": "Item Name",
             "title": {"equals": display_item_name(cycle_id, project_label)},
@@ -364,7 +359,7 @@ def find_existing_cycle_page(
         return titled_pages[0]
 
     legacy_pages = client.query_all(
-        data_source_id,
+        database_id,
         filter_payload={"property": "Item Name", "title": {"equals": legacy_item_name(cycle_id)}},
         page_size=10,
     )
@@ -382,7 +377,7 @@ def create_work_item_for_cycle(
     marker = dataset_marker(int(cycle["CYCLE_ID"]), int(cycle["SESSION_ID"]))
     existing = find_existing_cycle_page(
         client,
-        notion_cfg.work_items_data_source_id,
+        notion_cfg.work_items_db_id,
         marker,
         int(cycle["CYCLE_ID"]),
         notion_cfg.project_label,
