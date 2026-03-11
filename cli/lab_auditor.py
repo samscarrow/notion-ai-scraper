@@ -254,7 +254,7 @@ def check_lab_loop(
         last_edited = _property_timestamp(page, "Last Edited Time", fallback_field="last_edited_time")
         is_post_epoch = bool(created and created >= MODEL_EPOCH)
 
-        dr = _get_checkbox(props, "Dispatch Requested")
+        drra = _get_date_start(props, "Dispatch Requested Received At")
         drca = _get_date_start(props, "Dispatch Requested Consumed At")
         lrra = _get_date_start(props, "Librarian Request Received At")
         lrca = _get_date_start(props, "Librarian Request Consumed At")
@@ -265,8 +265,8 @@ def check_lab_loop(
         outcome = _get_rich_text(props, "Outcome")
         project_ids = _get_relation_ids(props, "Project")
 
-        if dr and drca:
-            _record(violations, "E.1", "MUST-FIX", name, "Dispatch Requested is true while Dispatch Requested Consumed At is set")
+        if drca and not drra:
+            _record(violations, "E.1", "MUST-FIX", name, "Dispatch Requested Consumed At is set but Dispatch Requested Received At is empty (orphan consume)")
             counters["e1"] += 1
         if lrra and lrca:
             _record(violations, "E.1", "MUST-FIX", name, "Librarian Request Received At is still set after Librarian Request Consumed At was written")
@@ -276,8 +276,8 @@ def check_lab_loop(
             _record(violations, "E.8A", "MUST-FIX", name, "Closed/Normal item is missing Verdict")
             counters["e8a"] += 1
 
-        if status == "Done" and dr:
-            _record(violations, "E.3", "MUST-FIX", name, "Status is Done while Dispatch Requested is still true")
+        if status == "Done" and drra and not drca:
+            _record(violations, "E.3", "MUST-FIX", name, "Status is Done but dispatch was never consumed (Dispatch Requested Received At set, Consumed At empty)")
             counters["e3"] += 1
         if status == "Not Started" and synthesis_complete:
             _record(violations, "E.3", "MUST-FIX", name, "Status is Not Started while Synthesis Complete is true")
@@ -308,8 +308,8 @@ def check_lab_loop(
             counters["e5"] += 1
 
         if is_post_epoch:
-            if dr and not drca:
-                _record(violations, "E.7", "P0", name, "Dispatch Requested is true but Dispatch Requested Consumed At is empty")
+            if drra and not drca:
+                _record(violations, "E.7", "P0", name, "Dispatch Requested Received At is set but Dispatch Requested Consumed At is empty (stalled dispatch)")
                 counters["e7"] += 1
             if lrra and not lrca:
                 _record(violations, "E.7", "P0", name, "Librarian Request Received At exists but Librarian Request Consumed At is empty")

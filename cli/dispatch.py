@@ -67,10 +67,6 @@ def _status(props: dict, key: str = "Status") -> str | None:
     return ((props.get(key, {}) or {}).get("status") or {}).get("name")
 
 
-def _checkbox(props: dict, key: str) -> bool:
-    return bool((props.get(key, {}) or {}).get("checkbox", False))
-
-
 def _url(props: dict, key: str) -> str | None:
     return (props.get(key, {}) or {}).get("url") or None
 
@@ -88,7 +84,7 @@ def _relation_ids(props: dict, key: str) -> list[str]:
 def get_dispatchable_items(client: notion_api.NotionAPIClient | None = None) -> list[dict[str, Any]]:
     """Query Work Items DB for items ready to dispatch.
 
-    Criteria: Dispatch Requested=true, Dispatch Requested Consumed At is empty,
+    Criteria: Dispatch Requested Received At is set, Dispatch Requested Consumed At is empty,
     Status in {Not Started, Prompt Requested}.
     """
     if client is None:
@@ -97,7 +93,7 @@ def get_dispatchable_items(client: notion_api.NotionAPIClient | None = None) -> 
     cfg = get_config()
     filter_payload = {
         "and": [
-            {"property": "Dispatch Requested", "checkbox": {"equals": True}},
+            {"property": "Dispatch Requested Received At", "date": {"is_not_empty": True}},
             {"property": "Dispatch Requested Consumed At", "date": {"is_empty": True}},
             {
                 "or": [
@@ -165,7 +161,7 @@ def build_dispatch_packet(
     item_type = _select(props, "Type") or "Other"
     prompt_notes = _text(props, "Prompt Notes") or None
     github_issue_url = _url(props, "GitHub Issue URL")
-    dispatch_requested = _checkbox(props, "Dispatch Requested")
+    received_at = _date_start(props, "Dispatch Requested Received At")
     consumed_at = _date_start(props, "Dispatch Requested Consumed At")
     existing_run_id = _text(props, "run_id") if "run_id" in props else None
 
@@ -236,9 +232,9 @@ def build_dispatch_packet(
     if existing_run_id:
         errors.append(f"V8: work item already has an active run_id '{existing_run_id}'")
 
-    # V9: Dispatch Requested is true
-    if not dispatch_requested:
-        errors.append("V9: Dispatch Requested is not checked")
+    # V9: Dispatch Requested Received At must be set
+    if not received_at:
+        errors.append("V9: Dispatch Requested Received At is not set")
 
     # V10: not already consumed
     if consumed_at:
@@ -308,7 +304,6 @@ def stamp_dispatch_consumed(
 
     # Update Work Item properties
     properties: dict[str, Any] = {
-        "Dispatch Requested": {"checkbox": False},
         "Dispatch Requested Consumed At": {"date": {"start": now}},
         "Status": {"status": {"name": "In Progress"}},
         "run_id": {"rich_text": [{"type": "text", "text": {"content": run_id}}]},

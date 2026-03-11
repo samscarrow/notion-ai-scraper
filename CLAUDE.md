@@ -39,7 +39,8 @@ cli/.venv/bin/python -c "import sys; sys.path.insert(0,'cli'); import notion_cli
 
 - Entry: `cli/mcp_server.py`, registered in `.mcp.json`
 - Server name: `notion-agents`
-- Tools: `list_agents`, `list_workspace_agents`, `sync_registry`, `dump_agent`, `update_agent`, `publish_agent`, `discover_agent`, `register_agent`, `remove_agent`, `get_agent_tools`, `add_agent_mcp_server`, `remove_agent_mcp_server`, `set_agent_model`, `chat_with_agent`, `get_conversation`, `query_database`, `get_agent_triggers`, `get_db_automations`, `grant_resource_access`, `get_dispatchable_items`, `build_dispatch_packet`, `stamp_dispatch_consumed`
+- Tools: `list_agents`, `list_workspace_agents`, `sync_registry`, `dump_agent`, `update_agent`, `publish_agent`, `discover_agent`, `register_agent`, `remove_agent`, `get_agent_tools`, `add_agent_mcp_server`, `remove_agent_mcp_server`, `set_agent_model`, `chat_with_agent`, `get_conversation`, `describe_database`, `query_database`, `get_agent_triggers`, `get_db_automations`, `grant_resource_access`, `get_dispatchable_items`, `build_dispatch_packet`, `stamp_dispatch_consumed`
+- `describe_database(database_id)` returns the schema (property names, types, select/status options). **Always call this before `query_database` if you don't know the exact property names and types.** The filter type key in `query_database` must match the property's actual type (e.g. `status` not `select` for status-type properties). `query_database` auto-corrects common mismatches, but `describe_database` prevents them entirely.
 - `chat_with_agent(agent_name, message, wait=True)` sends a message and returns the agent's response. Requires at least one UI-created thread per agent (programmatic thread creation is not yet supported by Notion's inference backend).
 - `sync_registry` auto-populates `cli/agents.yaml` from the live workspace (additive-only, safe to re-run)
 - See `~/.agents/skills/notion-agent-mcp/SKILL.md` for full API reference

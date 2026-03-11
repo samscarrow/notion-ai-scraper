@@ -169,6 +169,10 @@ class NotionAPIClient:
                 return results
             cursor = page.get("next_cursor")
 
+    def retrieve_database(self, database_id: str) -> dict[str, Any]:
+        """GET /v1/databases/{id} — returns schema, title, and metadata."""
+        return self._request("GET", f"databases/{database_id}")
+
     def query_database(
         self,
         database_id: str,

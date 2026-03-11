@@ -28,7 +28,7 @@ def _make_props(
     environment: str | None = None,
     branch: str = "",
     item_type: str = "Gauntlet",
-    dispatch_requested: bool = True,
+    received_at: str | None = "2026-01-01T00:00:00Z",
     consumed_at: str | None = None,
     run_id: str = "",
     github_url: str = "",
@@ -40,7 +40,10 @@ def _make_props(
         "Objective": {"type": "rich_text", "rich_text": [{"plain_text": objective}]},
         "Kill/Stop Condition": {"type": "rich_text", "rich_text": [{"plain_text": kill_condition}]},
         "Dispatch Via": {"type": "select", "select": {"name": dispatch_via} if dispatch_via else None},
-        "Dispatch Requested": {"type": "checkbox", "checkbox": dispatch_requested},
+        "Dispatch Requested Received At": {
+            "type": "date",
+            "date": {"start": received_at} if received_at else None,
+        },
         "Dispatch Requested Consumed At": {
             "type": "date",
             "date": {"start": consumed_at} if consumed_at else None,
@@ -188,9 +191,9 @@ class TestValidation:
         result = self._build(run_id="existing-run-id")
         assert any("V8" in e for e in result["errors"])
 
-    def test_v9_dispatch_not_requested(self):
-        """V9: Dispatch Requested is false."""
-        result = self._build(dispatch_requested=False)
+    def test_v9_dispatch_received_at_not_set(self):
+        """V9: Dispatch Requested Received At is empty."""
+        result = self._build(received_at=None)
         assert any("V9" in e for e in result["errors"])
 
     def test_v10_already_consumed(self):
