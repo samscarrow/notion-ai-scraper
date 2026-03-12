@@ -618,10 +618,10 @@ def _forward_to_openclaw(packet: dict):
 
 
 def _process_notion_dispatch(page_id: str):
-    """Background task: fetch Work Item, stamp consumed, route to execution plane.
+    """Background task: fetch Work Item, route by execution plane.
 
-    OpenClaw planes (Claude, Antigravity) are forwarded automatically.
-    All other planes (Claude Code, Gemini, Cursor, etc.) require manual dispatch.
+    OpenClaw planes (Claude, Antigravity): stamp consumed, forward to OpenClaw.
+    All other planes: ignored here — the Dispatcher agent owns their lifecycle.
     """
     import uuid as _uuid
 
@@ -642,8 +642,17 @@ def _process_notion_dispatch(page_id: str):
         return ((props.get(key) or {}).get("select") or {}).get("name")
 
     item_name = _prop_text("Item Name", "title")
-    execution_lane = _prop_select("Execution Lane")
     dispatch_via = _prop_select("Dispatch Via")
+
+    # Non-OpenClaw planes are handled by the Dispatcher agent, not this webhook.
+    if dispatch_via not in _OPENCLAW_PLANES:
+        logger.info(
+            "Dispatch Via='%s' is not an OpenClaw plane — Dispatcher agent owns this lifecycle (item=%s)",
+            dispatch_via, item_name,
+        )
+        return
+
+    execution_lane = _prop_select("Execution Lane")
     environment = _prop_select("Environment") or "dev"
     objective = _prop_text("Objective")
     consumed_at = ((props.get("Dispatch Requested Consumed At") or {}).get("date") or {}).get("start")
@@ -673,13 +682,7 @@ def _process_notion_dispatch(page_id: str):
         "dispatch_via": dispatch_via,
         "environment": environment,
     }
-    if dispatch_via in _OPENCLAW_PLANES:
-        _forward_to_openclaw(packet)
-    else:
-        logger.info(
-            "Dispatch Via='%s' requires manual dispatch — work item stamped, operator picks up (run_id=%s)",
-            dispatch_via, run_id,
-        )
+    _forward_to_openclaw(packet)
     logger.info("Notion dispatch complete: item=%s run_id=%s lane=%s via=%s", item_name, run_id, execution_lane, dispatch_via)
 
 
