@@ -233,6 +233,11 @@ def build_dispatch_packet(
     if existing_run_id:
         errors.append(f"V8: work item already has an active run_id '{existing_run_id}'")
 
+    # V9: dispatch request must exist
+    received_at = _date_start(props, "Dispatch Requested Received At")
+    if not received_at:
+        errors.append("V9: Dispatch Requested Received At is empty (no dispatch request)")
+
     # V10: not already consumed
     if consumed_at:
         errors.append(f"V10: Dispatch Requested Consumed At is already set ({consumed_at})")

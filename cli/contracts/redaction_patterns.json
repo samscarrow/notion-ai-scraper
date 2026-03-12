@@ -10,5 +10,6 @@
     {"label": "Bearer token",         "regex": "Bearer [A-Za-z0-9._-]+"},
     {"label": "DB connection string", "regex": "postgres(?:ql)?://[^\\s]+@[^\\s]+"}
   ],
-  "mandatory_lanes": ["sentinel-deploy", "ops", "bayview"]
+  "mandatory_lanes": ["sentinel-deploy", "ops", "bayview"],
+  "replacement": "[REDACTED: {label}]"
 }
