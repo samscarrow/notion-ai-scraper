@@ -174,6 +174,9 @@ def _handle_issue_closed(issue_url: str, issue_number: int, sender: str):
             return
         page_id = work_item["id"]
         from_status = _get_status_name(work_item)
+        if from_status == "Awaiting Intake":
+            logger.info("Work Item %s already Awaiting Intake — PR merge handled it, skipping issue close", issue_url)
+            return
         _update_work_item_complete(page_id, summary, from_status=from_status)
         project_rel = work_item["properties"].get("Project", {}).get("relation", [])
         if project_rel:
