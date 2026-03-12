@@ -163,7 +163,6 @@ def build_dispatch_packet(
     item_type = _select(props, "Type") or "Other"
     prompt_notes = _text(props, "Prompt Notes") or None
     github_issue_url = _url(props, "GitHub Issue URL")
-    received_at = _date_start(props, "Dispatch Requested Received At")
     consumed_at = _date_start(props, "Dispatch Requested Consumed At")
     existing_run_id = _text(props, "run_id") if "run_id" in props else None
 
@@ -233,10 +232,6 @@ def build_dispatch_packet(
     # V8: no active run_id (idempotency)
     if existing_run_id:
         errors.append(f"V8: work item already has an active run_id '{existing_run_id}'")
-
-    # V9: Dispatch Requested Received At must be set
-    if not received_at:
-        errors.append("V9: Dispatch Requested Received At is not set")
 
     # V10: not already consumed
     if consumed_at:
