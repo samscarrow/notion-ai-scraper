@@ -31,6 +31,7 @@ class NotionClientTests(unittest.TestCase):
                     "thread-1": {
                         "value": {
                             "value": {
+                                "id": "thread-1",
                                 "alive": True,
                                 "data": {"title": "Recovered title", "trigger_id": "trigger-1"},
                                 "updated_time": 202,
@@ -41,6 +42,7 @@ class NotionClientTests(unittest.TestCase):
                     "thread-2": {
                         "value": {
                             "value": {
+                                "id": "thread-2",
                                 "alive": False,
                                 "data": {"title": "Deleted thread"},
                             }
@@ -98,13 +100,14 @@ class NotionClientTests(unittest.TestCase):
         )
         first_payload = post_mock.call_args_list[0].args[1]
         second_payload = post_mock.call_args_list[1].args[1]
-        self.assertEqual(first_payload, {"workflowId": "workflow-1", "spaceId": "space-1", "limit": 2})
+        self.assertEqual(first_payload, {"workflowId": "workflow-1", "spaceId": "space-1", "limit": 2, "userId": "user-1"})
         self.assertEqual(
             second_payload,
             {
                 "workflowId": "workflow-1",
                 "spaceId": "space-1",
                 "limit": 2,
+                "userId": "user-1",
                 "cursor": "cursor-1",
             },
         )
