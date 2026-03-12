@@ -2,12 +2,14 @@
 dispatch.py — Dispatch adapter for the Lab control plane.
 
 Reads Work Items from the Lab, validates them against the OpenClaw v1.1 contract,
-and produces dispatch packets that execution planes can consume.
+produces dispatch packets that execution planes can consume, and ingests return
+payloads when execution completes.
 
-Three entry points (exposed as MCP tools in mcp_server.py):
+Entry points (exposed as MCP tools in mcp_server.py):
   - get_dispatchable_items()  — find ready work
   - build_dispatch_packet()   — validate + build packet for one item
   - stamp_dispatch_consumed() — mark item as consumed + In Progress
+  - handle_final_return()     — ingest execution results, trigger intake
 """
 
 from __future__ import annotations
@@ -327,3 +329,268 @@ def stamp_dispatch_consumed(
         pass
 
     return {"status": "consumed", "work_item_id": work_item_id, "run_id": run_id, "consumed_at": now}
+
+
+# ── Return ingestion ─────────────────────────────────────────────────────────
+
+VALID_RETURN_STATUSES = {"ok", "error", "gated", "timeout"}
+VALID_VERDICTS = {"PASS", "FAIL", "INCONCLUSIVE", "OBSERVATIONS"}
+
+
+def _resolve_verdict_mapping(
+    verdict: str | None, work_item_type: str | None, status: str,
+) -> dict[str, Any]:
+    """Map return status + verdict to Notion Status/Verdict properties.
+
+    Uses the same verdict_state_mapping.json as the aws-ec2 webhook bridge.
+    """
+    if status != "ok":
+        entry = VERDICT_MAPPING.get("error_states", {}).get(status)
+        if entry:
+            return entry
+        return {"status": "Blocked", "verdict": None}
+
+    if not verdict:
+        return {"status": "Done", "verdict": None}
+
+    is_gauntlet = work_item_type == "Gauntlet"
+    key = "gauntlet" if is_gauntlet else "non_gauntlet"
+    entry = VERDICT_MAPPING.get(key, {}).get(verdict)
+
+    if entry is None:
+        # OBSERVATIONS on Gauntlet → treat as INCONCLUSIVE + warning
+        if verdict == "OBSERVATIONS" and is_gauntlet:
+            fallback = VERDICT_MAPPING["gauntlet"]["INCONCLUSIVE"]
+            return {**fallback, "warning": "OBSERVATIONS invalid for Gauntlet — treated as INCONCLUSIVE"}
+        return {"status": "Done", "verdict": None}
+
+    return entry
+
+
+def _check_return_idempotency(
+    client: notion_api.NotionAPIClient, page_id: str, run_id: str,
+) -> bool:
+    """Check if this run_id has already been ingested by scanning page content."""
+    try:
+        blocks = client.list_block_children(page_id, page_size=100)
+        for block in blocks:
+            if block.get("type") == "heading_3":
+                texts = block.get("heading_3", {}).get("rich_text", [])
+                for t in texts:
+                    if run_id in t.get("text", {}).get("content", ""):
+                        return True
+    except Exception:
+        pass
+    return False
+
+
+def _apply_redaction(text: str) -> str:
+    """Apply redaction patterns from shared contract config."""
+    import re
+    for pattern_def in REDACTION_CONFIG.get("patterns", []):
+        compiled = re.compile(pattern_def["regex"])
+        replacement = REDACTION_CONFIG["replacement"].replace("{label}", pattern_def["label"])
+        text = compiled.sub(replacement, text)
+    return text
+
+
+def handle_final_return(
+    work_item_id: str,
+    run_id: str,
+    status: str,
+    summary: str,
+    raw_output: str,
+    duration_ms: int,
+    model: str,
+    lane: str,
+    verdict: str | None = None,
+    error: str | None = None,
+    metrics: dict | None = None,
+    artifacts: list[dict] | None = None,
+    files_changed: list[str] | None = None,
+    commit_sha: str | None = None,
+    pr_url: str | None = None,
+    client: notion_api.NotionAPIClient | None = None,
+) -> dict[str, Any]:
+    """Ingest a final return payload from an execution plane.
+
+    Mirrors the aws-ec2 webhook bridge's _ingest_final_return logic so both
+    return paths (GitHub webhook and direct MCP) produce identical Notion state.
+
+    Flow:
+      1. Validate return fields (R1-R5)
+      2. Idempotency check (duplicate run_id → reject)
+      3. Map verdict → Status/Verdict properties
+      4. Set Return Received At (triggers Lab Intake Clerk)
+      5. Append content blocks (summary, raw output, artifacts)
+      6. Write audit log entry
+    """
+    if client is None:
+        client = notion_api.NotionAPIClient(get_config().notion_token)
+
+    cfg = get_config()
+
+    # ── R1-R5 validation ──────────────────────────────────────────────
+    errors: list[str] = []
+    if status not in VALID_RETURN_STATUSES:
+        errors.append(f"R2: Invalid status '{status}' (must be ok/error/gated/timeout)")
+    if status == "ok" and not verdict:
+        errors.append("R3: status=ok requires a verdict")
+    if status != "ok" and not error:
+        errors.append(f"R4: status={status} requires an error message")
+    if verdict and verdict not in VALID_VERDICTS:
+        errors.append(f"R5: Invalid verdict '{verdict}' (must be PASS/FAIL/INCONCLUSIVE/OBSERVATIONS)")
+
+    if errors:
+        return {"ingested": False, "errors": errors}
+
+    # ── Idempotency gate ──────────────────────────────────────────────
+    if _check_return_idempotency(client, work_item_id, run_id):
+        return {"ingested": False, "reason": "duplicate_run_id", "run_id": run_id}
+
+    # ── Fetch Work Item for type resolution ───────────────────────────
+    page = client.retrieve_page(work_item_id)
+    props = page.get("properties", {})
+    item_name = _title(props, "Item Name")
+    wi_type = _select(props, "Type")
+    from_status = _status(props)
+
+    # ── Redaction ─────────────────────────────────────────────────────
+    raw_output = _apply_redaction(raw_output)
+
+    # ── Verdict mapping ───────────────────────────────────────────────
+    mapping = _resolve_verdict_mapping(verdict, wi_type, status)
+    now = notion_api.now_iso()
+
+    # ── Update Work Item properties ───────────────────────────────────
+    update_props: dict[str, Any] = {
+        "Return Received At": {"date": {"start": now}},
+        "Return Consumed At": {"date": {"start": now}},
+    }
+
+    if status == "ok":
+        update_props["Status"] = {"status": {"name": mapping.get("status", "Done")}}
+        mapped_verdict = mapping.get("verdict")
+        if mapped_verdict:
+            update_props["Verdict"] = {"select": {"name": mapped_verdict}}
+
+        outcome_text = summary
+        if mapping.get("warning"):
+            outcome_text = f"[WARNING: {mapping['warning']}] {outcome_text}"
+        if outcome_text:
+            update_props["Outcome"] = {
+                "rich_text": [{"type": "text", "text": {"content": outcome_text[:2000]}}]
+            }
+
+        if metrics:
+            update_props["Metrics"] = {
+                "rich_text": [{"type": "text", "text": {"content": json.dumps(metrics, indent=2)[:2000]}}]
+            }
+
+        # Signal Librarian
+        update_props["Librarian Request Received At"] = {"date": {"start": now}}
+    else:
+        # Error/gated/timeout: set Blocked but still record Return Received At
+        # so Intake Clerk trigger fires for triage
+        update_props["Status"] = {"status": {"name": mapping.get("status", "Blocked")}}
+
+    client.update_page(work_item_id, update_props)
+
+    # ── Append content blocks to page body ────────────────────────────
+    content_blocks: list[dict[str, Any]] = []
+
+    if status == "ok":
+        content_blocks.append(
+            notion_api.heading_block("heading_3", f"Execution Result (run_id: {run_id})")
+        )
+        content_blocks.append(
+            notion_api.paragraph_block(
+                f"Lane: {lane} | Model: {model} | Duration: {duration_ms}ms | Verdict: {verdict}"
+            )
+        )
+
+        # Raw output in a toggle (truncated to Notion limits)
+        if raw_output:
+            chunks = [raw_output[i:i + 2000] for i in range(0, min(len(raw_output), 10000), 2000)]
+            content_blocks.append({
+                "object": "block", "type": "toggle",
+                "toggle": {
+                    "rich_text": [{"type": "text", "text": {"content": "Raw Output"}}],
+                    "children": [
+                        {
+                            "object": "block", "type": "code",
+                            "code": {
+                                "rich_text": [{"type": "text", "text": {"content": chunk}}],
+                                "language": "plain text",
+                            },
+                        }
+                        for chunk in chunks
+                    ],
+                },
+            })
+    else:
+        content_blocks.append(
+            notion_api.heading_block("heading_3", f"Execution Error (run_id: {run_id})")
+        )
+        content_blocks.append({
+            "object": "block", "type": "callout",
+            "callout": {
+                "icon": {"emoji": "\u26a0\ufe0f"},
+                "rich_text": [{"type": "text", "text": {
+                    "content": f"Status: {status} | Lane: {lane} | Error: {error or 'Unknown'}"
+                }}],
+            },
+        })
+
+    # Artifacts section
+    if artifacts or files_changed or commit_sha or pr_url:
+        artifact_lines: list[str] = []
+        if commit_sha:
+            artifact_lines.append(f"Commit: {commit_sha}")
+        if pr_url:
+            artifact_lines.append(f"PR: {pr_url}")
+        for a in (artifacts or []):
+            artifact_lines.append(
+                f"[{a.get('type', 'file')}] {a.get('path_or_url', '')} — {a.get('description', '')}"
+            )
+        if files_changed:
+            artifact_lines.append(f"Files changed: {', '.join(files_changed[:20])}")
+
+        content_blocks.append(
+            notion_api.heading_block("heading_3", "Artifacts")
+        )
+        content_blocks.append(
+            notion_api.paragraph_block("\n".join(artifact_lines)[:2000])
+        )
+
+    if content_blocks:
+        client.append_block_children(work_item_id, content_blocks)
+
+    # ── Audit log entry ───────────────────────────────────────────────
+    to_status = mapping.get("status", "Done") if status == "ok" else "Blocked"
+    try:
+        client.create_page(
+            parent={"database_id": cfg.audit_log_db_id},
+            properties={
+                "Transition": {"title": [{"type": "text", "text": {
+                    "content": f"v1.1 Return: {item_name} ({status})"
+                }}]},
+                "Work Item": {"relation": [{"id": work_item_id}]},
+                "Agent": {"select": {"name": "Dispatch Adapter (v1.1)"}},
+                "To Status": {"select": {"name": to_status}},
+                "Consumption Timestamp": {"date": {"start": now}},
+                **({"From Status": {"select": {"name": from_status}}} if from_status else {}),
+            },
+        )
+    except Exception:
+        pass  # Audit log failure should not block return
+
+    return {
+        "ingested": True,
+        "work_item_id": work_item_id,
+        "item_name": item_name,
+        "run_id": run_id,
+        "status": status,
+        "verdict": verdict,
+        "mapped_status": to_status,
+    }

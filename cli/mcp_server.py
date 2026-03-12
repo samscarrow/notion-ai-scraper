@@ -2085,6 +2085,92 @@ def stamp_dispatch_consumed(work_item_id: str, run_id: str) -> str:
     )
 
 
+@mcp.tool()
+def handle_final_return(
+    work_item_id: str,
+    run_id: str,
+    status: str,
+    summary: str,
+    raw_output: str,
+    duration_ms: int,
+    model: str,
+    lane: str,
+    verdict: str = "",
+    error: str = "",
+    metrics: str = "",
+    artifacts: str = "",
+    files_changed: str = "",
+    commit_sha: str = "",
+    pr_url: str = "",
+) -> str:
+    """
+    Ingest a final return payload from an execution plane.
+
+    Called by lane agents (via mcporter) when work is complete. Sets Return
+    Received At (triggers Lab Intake Clerk), maps verdict to Status/Verdict,
+    appends findings to the Work Item page, and writes an audit log entry.
+
+    Mirrors the aws-ec2 webhook bridge /return endpoint so both return paths
+    produce identical Notion state.
+
+    work_item_id: UUID of the Work Item page.
+    run_id: The run_id from the dispatch packet.
+    status: ok, error, gated, or timeout.
+    summary: Brief summary of execution results (max 500 chars).
+    raw_output: Full execution output (will be redacted and truncated).
+    duration_ms: Execution duration in milliseconds.
+    model: Model used for execution (e.g. claude-opus-4-6).
+    lane: Execution lane that performed the work.
+    verdict: PASS, FAIL, INCONCLUSIVE, or OBSERVATIONS (required if status=ok).
+    error: Error message (required if status!=ok).
+    metrics: Optional JSON string of execution metrics.
+    artifacts: Optional JSON array string of artifact objects.
+    files_changed: Optional comma-separated list of changed files.
+    commit_sha: Optional git commit SHA.
+    pr_url: Optional pull request URL.
+    """
+    client = _get_notion_api_client()
+
+    # Parse optional JSON fields
+    parsed_metrics = json.loads(metrics) if metrics else None
+    parsed_artifacts = json.loads(artifacts) if artifacts else None
+    parsed_files = [f.strip() for f in files_changed.split(",") if f.strip()] if files_changed else None
+
+    result = dispatch.handle_final_return(
+        work_item_id=work_item_id,
+        run_id=run_id,
+        status=status,
+        summary=summary,
+        raw_output=raw_output,
+        duration_ms=int(duration_ms),
+        model=model,
+        lane=lane,
+        verdict=verdict or None,
+        error=error or None,
+        metrics=parsed_metrics,
+        artifacts=parsed_artifacts,
+        files_changed=parsed_files,
+        commit_sha=commit_sha or None,
+        pr_url=pr_url or None,
+        client=client,
+    )
+
+    if not result.get("ingested"):
+        if result.get("errors"):
+            error_list = "\n".join(f"- {e}" for e in result["errors"])
+            return f"**Return rejected** ({len(result['errors'])} error(s)):\n\n{error_list}"
+        return f"**Return rejected:** {result.get('reason', 'unknown')} (run_id: {result.get('run_id', '?')})"
+
+    return (
+        f"**Return ingested.**\n\n"
+        f"- Work Item: `{result['work_item_id']}` ({result['item_name']})\n"
+        f"- Run ID: `{result['run_id']}`\n"
+        f"- Status: {result['status']} → Notion Status: {result['mapped_status']}\n"
+        f"- Verdict: {result.get('verdict') or 'N/A'}\n"
+        f"- Intake Clerk trigger: fired (Return Received At set)"
+    )
+
+
 def main():
     transport = sys.argv[1] if len(sys.argv) > 1 else "stdio"
     mcp.run(transport=transport)
