@@ -46,6 +46,8 @@ from notion_agent_config import (
     grant_agent_resource_access,
     ensure_mention_access,
     check_mention_access,
+    create_agent,
+    add_agent_to_sidebar,
     publish_agent,
 )
 
@@ -77,6 +79,7 @@ __all__ = [
     "MODEL_NAMES", "_resolve_page_names", "get_agent_modules",
     "update_agent_modules", "update_agent_model",
     "grant_agent_resource_access", "ensure_mention_access", "check_mention_access",
+    "create_agent", "add_agent_to_sidebar",
     "publish_agent",
     
     "_extract_rich_text", "_clean_text", "_extract_inference_turn",

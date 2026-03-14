@@ -703,14 +703,11 @@ def chat_with_agent(agent_name: str, message: str, thread_id: str | None = None,
     created_new = False
 
     if new_thread:
-        # NOTE: Programmatically created threads do not trigger inference
-        # on Notion's backend (returns empty streaming response).
-        # For now, require at least one UI-created thread per agent.
-        raise ValueError(
-            f"Programmatic creation of new threads for agent '{agent_name}' is not yet "
-            "supported by Notion's inference backend. Please continue an existing thread "
-            "or start a new one in the Notion UI first."
+        thread_id = notion_client.create_workflow_thread(
+            cfg['notion_internal_id'], cfg['space_id'], token, user_id,
         )
+        created_new = True
+        print(f"Created new thread: {thread_id}", file=sys.stderr)
 
     if not thread_id:
         # Try to find an existing non-trigger thread
@@ -722,11 +719,12 @@ def chat_with_agent(agent_name: str, message: str, thread_id: str | None = None,
             thread_id = manual_threads[0]['id']
             print(f"Continuing most recent thread: {thread_id}", file=sys.stderr)
         else:
-            raise ValueError(
-                f"No existing threads found for agent '{agent_name}'. "
-                "Please start a chat with this agent in the Notion UI first, "
-                "then retry."
+            # No threads at all — create one
+            thread_id = notion_client.create_workflow_thread(
+                cfg['notion_internal_id'], cfg['space_id'], token, user_id,
             )
+            created_new = True
+            print(f"Created first thread: {thread_id}", file=sys.stderr)
 
     msg_id = notion_client.send_agent_message(
         thread_id=thread_id,

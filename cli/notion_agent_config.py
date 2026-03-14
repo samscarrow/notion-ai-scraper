@@ -1,8 +1,12 @@
 import re
+import time
+import uuid
 from typing import Any
 from notion_http import _post, _normalize_record_map, _tx, send_ops
 
 import notion_threads
+
+DEFAULT_AGENT_ICON = "https://www.notion.so/images/customAgentAvatars/triangle-blue.png"
 
 # Pattern to extract {{page:uuid}} mentions from instruction markdown
 _MENTION_RE = re.compile(r"\{\{page:([0-9a-f-]{36})\}\}")
@@ -341,6 +345,192 @@ def ensure_mention_access(
 
     update_agent_modules(notion_internal_id, space_id, modules, token_v2, user_id)
     return sorted(missing)
+
+
+def _new_id() -> str:
+    return str(uuid.uuid4())
+
+
+def create_agent(
+    space_id: str, name: str, icon: str | None,
+    token_v2: str, user_id: str | None = None,
+) -> dict[str, str]:
+    """Create a new Notion AI Agent.
+
+    Mirrors the UI's agentActions.createBlankAgent flow:
+    1. Create workflow record with name, icon, default modules/triggers
+    2. Create instruction page block parented to the workflow
+    3. Link instructions to the workflow
+
+    Returns {"notion_internal_id": wf_id, "notion_public_id": instr_id}.
+    """
+    wf_id = _new_id()
+    instr_id = _new_id()
+    child_block_id = _new_id()
+    notion_module_id = _new_id()
+    trigger_id = _new_id()
+    now = int(time.time() * 1000)
+
+    if not user_id:
+        # Discover user_id from spaces
+        spaces = get_user_spaces(token_v2)
+        for s in spaces:
+            if s["id"] == space_id:
+                break
+        # Fall back to first available user
+        data = _normalize_record_map(_post("loadUserContent", {}, token_v2))
+        user_map = data.get("recordMap", {}).get("notion_user", {})
+        if user_map:
+            user_id = next(iter(user_map))
+
+    user_table = "notion_user"
+    icon_url = icon or DEFAULT_AGENT_ICON
+
+    ops = [
+        # 1. Create workflow record
+        {
+            "pointer": {"table": "workflow", "id": wf_id, "spaceId": space_id},
+            "path": [],
+            "command": "set",
+            "args": {
+                "id": wf_id,
+                "version": 1,
+                "parent_id": space_id,
+                "parent_table": "space",
+                "space_id": space_id,
+                "data": {
+                    "scripts": [],
+                    "modules": [{
+                        "id": notion_module_id,
+                        "type": "notion",
+                        "name": "Notion",
+                        "version": "1.0.0",
+                        "permissions": [],
+                    }],
+                    "triggers": [{
+                        "id": trigger_id,
+                        "moduleId": notion_module_id,
+                        "enabled": True,
+                        "state": {"type": "notion.agent.mentioned"},
+                    }],
+                    "name": name,
+                    "icon": icon_url,
+                },
+                "created_by_table": user_table,
+                "created_by_id": user_id,
+                "created_time": now,
+                "last_edited_by_table": user_table,
+                "last_edited_by_id": user_id,
+                "last_edited_time": now,
+                "alive": True,
+                "permissions": [{
+                    "type": "user_permission",
+                    "role": "editor",
+                    "user_id": user_id,
+                }],
+            },
+        },
+        # 2. Create instruction page block
+        {
+            "pointer": {"table": "block", "id": instr_id, "spaceId": space_id},
+            "path": [],
+            "command": "set",
+            "args": {
+                "id": instr_id,
+                "type": "page",
+                "properties": {"title": [[f"{name} Instructions"]]},
+                "space_id": space_id,
+                "created_time": now,
+                "created_by_table": user_table,
+                "created_by_id": user_id,
+            },
+        },
+        # 3. Create empty child text block
+        {
+            "pointer": {"table": "block", "id": child_block_id, "spaceId": space_id},
+            "path": [],
+            "command": "set",
+            "args": {
+                "id": child_block_id,
+                "type": "text",
+                "properties": {"title": []},
+                "space_id": space_id,
+                "created_time": now,
+                "created_by_table": user_table,
+                "created_by_id": user_id,
+            },
+        },
+        # 4. Add child block to instruction page
+        {
+            "pointer": {"table": "block", "id": instr_id, "spaceId": space_id},
+            "path": ["content"],
+            "command": "insertChildrenAfter",
+            "args": {"ids": [child_block_id]},
+        },
+        # 5. Parent instruction page to workflow
+        {
+            "pointer": {"table": "block", "id": instr_id, "spaceId": space_id},
+            "path": [],
+            "command": "update",
+            "args": {
+                "parent_id": wf_id,
+                "parent_table": "workflow",
+                "alive": True,
+            },
+        },
+        # 6. Link instructions to workflow
+        {
+            "pointer": {"table": "workflow", "id": wf_id, "spaceId": space_id},
+            "command": "set",
+            "path": ["data", "instructions"],
+            "args": {"table": "block", "id": instr_id, "spaceId": space_id},
+        },
+    ]
+
+    send_ops(space_id, ops, token_v2, user_id,
+             user_action="agentActions.createBlankAgent")
+
+    return {"notion_internal_id": wf_id, "notion_public_id": instr_id}
+
+
+def add_agent_to_sidebar(
+    space_id: str, notion_internal_id: str,
+    token_v2: str, user_id: str | None = None,
+) -> None:
+    """Add an agent to the user's sidebar by updating space_view settings."""
+    # Get the space_view_id
+    data = _normalize_record_map(_post("loadUserContent", {}, token_v2))
+    space_views = data.get("recordMap", {}).get("space_view", {})
+
+    space_view_id = None
+    for sv_id, sv_data in space_views.items():
+        val = sv_data.get("value", {})
+        if val.get("space_id") == space_id:
+            space_view_id = sv_id
+            break
+
+    if not space_view_id:
+        return  # Can't find space_view — agent still works, just not in sidebar
+
+    # Get current sidebar workflow ids
+    settings = space_views.get(space_view_id, {}).get("value", {}).get("settings", {})
+    current_ids = list(settings.get("sidebar_workflow_ids", []))
+
+    if notion_internal_id in current_ids:
+        return  # Already there
+
+    # Prepend new agent
+    current_ids.insert(0, notion_internal_id)
+
+    ops = [{
+        "pointer": {"id": space_view_id, "table": "space_view", "spaceId": space_id},
+        "path": ["settings"],
+        "command": "update",
+        "args": {"sidebar_workflow_ids": current_ids},
+    }]
+
+    send_ops(space_id, ops, token_v2, user_id,
+             user_action="sidebarWorkflowsActions.addSidebarWorkflow")
 
 
 def check_mention_access(

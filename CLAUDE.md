@@ -39,10 +39,12 @@ cli/.venv/bin/python -c "import sys; sys.path.insert(0,'cli'); import notion_cli
 
 - Entry: `cli/mcp_server.py`, registered in `.mcp.json`
 - Server name: `notion-agents`
-- Tools: `list_agents`, `list_workspace_agents`, `sync_registry`, `dump_agent`, `update_agent`, `publish_agent`, `discover_agent`, `register_agent`, `remove_agent`, `get_agent_tools`, `add_agent_mcp_server`, `remove_agent_mcp_server`, `set_agent_model`, `chat_with_agent`, `get_conversation`, `describe_database`, `query_database`, `get_agent_triggers`, `get_db_automations`, `grant_resource_access`, `get_dispatchable_items`, `build_dispatch_packet`, `stamp_dispatch_consumed`
+- Tools: `list_agents`, `list_workspace_agents`, `sync_registry`, `dump_agent`, `update_agent`, `publish_agent`, `discover_agent`, `register_agent`, `remove_agent`, `create_agent`, `get_agent_tools`, `add_agent_mcp_server`, `remove_agent_mcp_server`, `set_agent_model`, `grant_resource_access`, `chat_with_agent`, `get_conversation`, `describe_database`, `query_database`, `count_database`, `get_agent_triggers`, `get_db_automations`, `check_gates`, `get_dispatchable_items`, `build_dispatch_packet`, `stamp_dispatch_consumed`, `handle_final_return`
 - `describe_database(database_id)` returns the schema (property names, types, select/status options). **Always call this before `query_database` if you don't know the exact property names and types.** The filter type key in `query_database` must match the property's actual type (e.g. `status` not `select` for status-type properties). `query_database` auto-corrects common mismatches, but `describe_database` prevents them entirely.
-- `chat_with_agent(agent_name, message, wait=True)` sends a message and returns the agent's response. Requires at least one UI-created thread per agent (programmatic thread creation is not yet supported by Notion's inference backend).
-- `sync_registry` auto-populates `cli/agents.yaml` from the live workspace (additive-only, safe to re-run)
+- `chat_with_agent(agent_name, message, wait=True)` sends a message and returns the agent's response. Automatically creates a thread if none exist — no UI interaction needed.
+- `create_agent(name, space_id)` creates a new agent programmatically (workflow + instruction page + sidebar + initial publish).
+- `update_agent` auto-grants `reader` access for any `{{page:uuid}}` mentions in instructions before publish. Pre-publish validation warns on unresolvable pages.
+- `sync_registry` auto-populates `cli/agents.yaml` from the live workspace (additive-only, safe to re-run). Also syncs to `agent-env/template-data.json` for skill rendering.
 - See `~/.agents/skills/notion-agent-mcp/SKILL.md` for full API reference
 
 ## ID Duality & Tool Compatibility
@@ -54,11 +56,26 @@ Notion databases have two distinct UUIDs. Using the wrong one will result in a 4
 | **notion_public_id** | `page_id` | Public API (`retrieve-a-database`, `query-database`, `update-page-v2`) |
 | **notion_internal_id** | `collection_id` | Internal Tools (`triggers`, `query-data-source`, `view`) |
 
+## Dashboard Server
+
+- Entry: `cli/dashboard_server.py`, runs on port 8099 by default
+- Start: `cli/.venv/bin/python cli/dashboard_server.py [--port 8099]`
+- Frontend: `dashboard/` (plain HTML + ES modules, Observable Plot via CDN — no build step)
+- Uses `notion_api.NotionAPIClient` directly (public API, `NOTION_TOKEN`)
+- Databases shown: Work Items, Lab Projects, Audit Log (from `cli/config.py`)
+- Routes: `GET /` (HTML), `/api/databases`, `/api/schema/{db_id}`, `/api/query/{db_id}`, `/api/aggregate/{db_id}`
+- `aggregate` mode fetches all pages and returns per-column statistics (mirrors `_aggregate_pages` in mcp_server.py)
+- `query_database` in mcp_server.py gained `aggregate`, `sample`, and `max_tokens` modes in the feature/notion-dashboard merge
+
 ## Key files
 
 | File | Purpose |
 |---|---|
 | `cli/mcp_server.py` | MCP server (27 tools) |
+| `cli/dashboard_server.py` | HTTP dashboard server (Starlette + uvicorn, port 8099) |
+| `dashboard/index.html` | Dashboard shell |
+| `dashboard/app.js` | Chart rendering (Observable Plot CDN, ES modules) |
+| `dashboard/dashboard.css` | Dark theme styles |
 | `cli/notion_client.py` | Internal Notion API client |
 | `cli/block_builder.py` | Markdown ↔ Notion blocks (Python) |
 | `cli/cookie_extract.py` | Firefox `token_v2` auth |
