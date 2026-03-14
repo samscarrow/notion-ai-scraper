@@ -726,6 +726,15 @@ async def notion_dispatch_webhook(
 @app.get("/health")
 async def health(): return {"ok": True}
 
+
+@app.api_route("/github", methods=["GET", "POST", "PUT", "PATCH"])
+async def unknown_github_route(request: Request):
+    """Catch requests to /github and log headers for provenance analysis."""
+    headers = {k: v for k, v in request.headers.items()
+               if k.lower().startswith("x-github") or k.lower() in ("user-agent", "x-forwarded-for")}
+    logger.warning("Unknown /github request: method=%s headers=%s", request.method, headers)
+    return {"status": "not_found", "hint": "Use /webhook for GitHub webhooks"}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
