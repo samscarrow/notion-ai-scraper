@@ -11,6 +11,17 @@ DEFAULT_AGENT_ICON = "https://www.notion.so/images/customAgentAvatars/triangle-b
 # Pattern to extract {{page:uuid}} mentions from instruction markdown
 _MENTION_RE = re.compile(r"\{\{page:([0-9a-f-]{36})\}\}")
 
+# Canonical UUID format: 8-4-4-4-12
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+# Default workspace-public reader permission (UI adds this to every new agent)
+_WORKSPACE_PUBLIC_PERM = {
+    "type": "notion",
+    "actions": ["reader"],
+    "identifier": {"type": "workspacePublic"},
+    "moduleType": "notion",
+}
+
 def get_user_spaces(token_v2: str) -> list[dict]:
     data = _normalize_record_map(_post("loadUserContent", {}, token_v2))
     record_map = data.get("recordMap", {})
@@ -268,6 +279,21 @@ def _make_page_permission(page_id: str, role: str = "reader") -> dict:
     }
 
 
+def check_block_alive(block_id: str, token_v2: str) -> bool:
+    """Return True if a block/page exists and is alive."""
+    if not _UUID_RE.match(block_id):
+        return False
+    try:
+        data = _post("syncRecordValues", {
+            "requests": [{"pointer": {"table": "block", "id": block_id}, "version": -1}]
+        }, token_v2)
+        blocks = _normalize_record_map(data).get("recordMap", {}).get("block", {})
+        val = blocks.get(block_id, {}).get("value", blocks.get(block_id, {}))
+        return bool(val and val.get("alive", False))
+    except Exception:
+        return False
+
+
 def grant_agent_resource_access(
     notion_internal_id: str, space_id: str,
     notion_public_id: str, role: str,
@@ -275,20 +301,31 @@ def grant_agent_resource_access(
 ) -> dict:
     """Grant an agent access to a Notion page/database.
 
-    Adds a permission entry to modules[type=notion].permissions[] if not
-    already present, then publishes the agent.
+    Validates the page is alive before adding, then publishes the agent.
     """
+    if not _UUID_RE.match(notion_public_id):
+        raise ValueError(
+            f"Malformed UUID: {notion_public_id!r}. "
+            "Expected format: 8-4-4-4-12 hex digits with dashes."
+        )
+
+    if not check_block_alive(notion_public_id, token_v2):
+        raise ValueError(
+            f"Page {notion_public_id} is not alive or not accessible. "
+            "Cannot grant access to a dead or missing page."
+        )
+
     wf_record = get_workflow_record(notion_internal_id, token_v2, user_id)
     modules = wf_record.get("data", {}).get("modules", [])
     notion_mod = _get_notion_module(modules)
 
     if notion_mod is None:
         notion_mod = {"id": None, "name": "Notion", "type": "notion",
-                      "version": "1.0.0", "permissions": []}
+                      "version": "1.0.0", "permissions": [_WORKSPACE_PUBLIC_PERM]}
         modules.append(notion_mod)
 
     if "permissions" not in notion_mod:
-        notion_mod["permissions"] = []
+        notion_mod["permissions"] = [_WORKSPACE_PUBLIC_PERM]
 
     existing = {p.get("identifier", {}).get("blockId")
                 for p in notion_mod["permissions"]
@@ -405,7 +442,7 @@ def create_agent(
                         "type": "notion",
                         "name": "Notion",
                         "version": "1.0.0",
-                        "permissions": [],
+                        "permissions": [_WORKSPACE_PUBLIC_PERM],
                     }],
                     "triggers": [{
                         "id": trigger_id,
@@ -547,6 +584,62 @@ def check_mention_access(
     return sorted(mentioned - granted)
 
 
+def diagnose_publish_failure(
+    notion_internal_id: str, space_id: str,
+    token_v2: str, user_id: str | None = None,
+) -> list[dict]:
+    """Identify which specific permissions are blocking publish.
+
+    Strips all page permissions, publishes (should succeed), then tests
+    each permission individually to find the blockers.
+    """
+    wf_record = get_workflow_record(notion_internal_id, token_v2, user_id)
+    modules = wf_record.get("data", {}).get("modules", [])
+    notion_mod = _get_notion_module(modules)
+    if not notion_mod:
+        return []
+
+    original_perms = notion_mod.get("permissions", [])[:]
+    page_perms = [
+        p for p in original_perms
+        if p.get("identifier", {}).get("type") == "pageOrCollectionViewBlock"
+    ]
+    non_page_perms = [
+        p for p in original_perms
+        if p.get("identifier", {}).get("type") != "pageOrCollectionViewBlock"
+    ]
+
+    broken = []
+    for p in page_perms:
+        bid = p.get("identifier", {}).get("blockId", "")
+        # Check UUID format
+        if not _UUID_RE.match(bid):
+            broken.append({"blockId": bid, "reason": "malformed_uuid"})
+            continue
+        # Check liveness
+        if not check_block_alive(bid, token_v2):
+            broken.append({"blockId": bid, "reason": "dead_or_missing"})
+            continue
+        # Test publish with only this permission
+        notion_mod["permissions"] = non_page_perms + [p]
+        update_agent_modules(notion_internal_id, space_id, modules, token_v2, user_id)
+        try:
+            result = _post("publishCustomAgentVersion",
+                           {"workflowId": notion_internal_id, "spaceId": space_id},
+                           token_v2, user_id)
+            if "incomplete_ancestor_path" in str(result):
+                broken.append({"blockId": bid, "reason": "ancestor_path_broken"})
+        except RuntimeError as e:
+            if "incomplete_ancestor_path" in str(e):
+                broken.append({"blockId": bid, "reason": "ancestor_path_broken"})
+
+    # Restore original permissions
+    notion_mod["permissions"] = original_perms
+    update_agent_modules(notion_internal_id, space_id, modules, token_v2, user_id)
+
+    return broken
+
+
 def publish_agent(notion_internal_id: str, space_id: str,
                   token_v2: str, user_id: str | None = None,
                   dry_run: bool = False,
@@ -562,10 +655,10 @@ def publish_agent(notion_internal_id: str, space_id: str,
                 "warning": "incomplete_ancestor_path",
                 "detail": (
                     "publishCustomAgentVersion returned incomplete_ancestor_path. "
-                    "This typically means the agent's instructions reference pages "
-                    "(via {{page:uuid}} mentions) that are not granted in the agent's "
-                    "Tools & Access settings. Fix: use grant_resource_access to add "
-                    "the missing pages, or remove the mentions from instructions. "
+                    "This typically means the agent's permissions include dead, "
+                    "malformed, or access-revoked pages. Run diagnose_publish_failure() "
+                    "to identify the specific blockers, or check the agent's Tools & "
+                    "Access settings in the Notion UI for 'Access revoked' entries. "
                     "Block edits were saved; the published artifact may be stale."
                 ),
             }
