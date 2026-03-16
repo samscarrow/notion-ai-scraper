@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field, TypeAdapter
 # ---------------------------------------------------------------------------
 
 # Mention type codes used by Notion rich text annotations.
-MENTION_TYPES = {"p": "page", "u": "user", "d": "date", "a": "agent", "s": "space"}
+MENTION_TYPES = {"p": "page", "u": "user", "d": "date", "a": "agent", "s": "space", "ds": "data_source"}
 MENTION_CODES = {v: k for k, v in MENTION_TYPES.items()}
 
 # Decorator marks: simple string marks with no associated data.
@@ -55,7 +55,7 @@ _FMT_RE = re.compile(
 # IR Span Models
 # ---------------------------------------------------------------------------
 
-MentionKind = Literal["page", "user", "date", "agent", "space"]
+MentionKind = Literal["page", "user", "date", "agent", "space", "data_source"]
 
 
 class TextSpan(BaseModel, frozen=True):

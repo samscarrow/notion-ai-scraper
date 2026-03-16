@@ -1,0 +1,7 @@
+# Mirror manifest for bay_view_consulting
+# Generated from live Notion state
+# Instructions should be saved to mirrors/bay_view_consulting.md
+
+target: bay_view_consulting
+model: chatgpt
+instructions: mirrors/bay_view_consulting.md

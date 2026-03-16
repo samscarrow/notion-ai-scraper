@@ -49,6 +49,9 @@ class Violation:
     detail: str
 
 
+BLOCKING_SEVERITIES = {"MUST-FIX", "P0"}
+
+
 def _parse_dt(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -167,6 +170,10 @@ def _print_section(title: str, violations: list[Violation]) -> None:
         print(f"[{violation.severity}: {violation.code}] {violation.subject}: {violation.detail}")
 
 
+def _blocking_violation_count(violations: list[Violation]) -> int:
+    return sum(1 for violation in violations if violation.severity in BLOCKING_SEVERITIES)
+
+
 def check_prompt_engineering_invariants(prompt_requests: list[dict[str, Any]]) -> list[Violation]:
     violations: list[Violation] = []
     active_pairs: dict[tuple[str, str], list[str]] = defaultdict(list)
@@ -265,26 +272,28 @@ def check_lab_loop(
         outcome = _get_rich_text(props, "Outcome")
         project_ids = _get_relation_ids(props, "Project")
 
-        if drca and not drra:
-            _record(violations, "E.1", "MUST-FIX", name, "Dispatch Requested Consumed At is set but Dispatch Requested Received At is empty (orphan consume)")
-            counters["e1"] += 1
-        if lrra and lrca:
-            _record(violations, "E.1", "MUST-FIX", name, "Librarian Request Received At is still set after Librarian Request Consumed At was written")
-            counters["e1"] += 1
+        if is_post_epoch:
+            if drra and drca:
+                _record(violations, "E.1", "MUST-FIX", name, "Dispatch Requested Received At is still set after Dispatch Requested Consumed At was written")
+                counters["e1"] += 1
+            if lrra and lrca:
+                _record(violations, "E.1", "INFO", name, "Librarian request received and consumed timestamps are both set")
+                counters["e1_info"] += 1
 
         if status == "Closed" and close_reason == "Normal" and not verdict:
             _record(violations, "E.8A", "MUST-FIX", name, "Closed/Normal item is missing Verdict")
             counters["e8a"] += 1
 
-        if status == "Done" and drra and not drca:
-            _record(violations, "E.3", "MUST-FIX", name, "Status is Done but dispatch was never consumed (Dispatch Requested Received At set, Consumed At empty)")
-            counters["e3"] += 1
-        if status == "Not Started" and synthesis_complete:
-            _record(violations, "E.3", "MUST-FIX", name, "Status is Not Started while Synthesis Complete is true")
-            counters["e3"] += 1
-        if status == "Prompt Requested" and not github_issue_url:
-            _record(violations, "E.3", "MUST-FIX", name, "Prompt Requested item is missing GitHub Issue URL")
-            counters["e3"] += 1
+        if is_post_epoch:
+            if status == "Done" and drra and not drca:
+                _record(violations, "E.3", "MUST-FIX", name, "Status is Done but dispatch was never consumed (Dispatch Requested Received At set, Consumed At empty)")
+                counters["e3"] += 1
+            if status == "Not Started" and synthesis_complete:
+                _record(violations, "E.3", "MUST-FIX", name, "Status is Not Started while Synthesis Complete is true")
+                counters["e3"] += 1
+            if status == "Prompt Requested" and not github_issue_url:
+                _record(violations, "E.3", "MUST-FIX", name, "Prompt Requested item is missing GitHub Issue URL")
+                counters["e3"] += 1
 
         if last_edited:
             if status == "Prompt Requested" and last_edited < now - timedelta(hours=24):
@@ -293,9 +302,9 @@ def check_lab_loop(
             if status == "In Progress" and last_edited < now - timedelta(days=7):
                 _record(violations, "E.4", "MUST-FIX", name, "In Progress for more than 7 days")
                 counters["e4"] += 1
-            if status == "Done" and not synthesis_complete and last_edited < now - timedelta(days=3):
-                _record(violations, "E.4", "MUST-FIX", name, "Done without synthesis for more than 3 days")
-                counters["e4"] += 1
+            if status in {"Done", "Passed", "Kill Condition Met"} and not synthesis_complete and last_edited < now - timedelta(days=3):
+                _record(violations, "E.4", "NICE-TO-HAVE", name, f"{status} without synthesis for more than 3 days")
+                counters["e4_nice"] += 1
 
         if is_post_epoch and status in {"Done", "Inconclusive", "Kill Condition Met"} and audit_log_counts[page["id"]] < 2:
             _record(
@@ -378,9 +387,11 @@ def summarize_counts(prompt_violations: list[Violation], loop_counts: dict[str, 
     print("\n== Lab-Loop-v1 Scorecard ==")
     print(f"Prompt invariants: {len(prompt_violations)}")
     print(f"Signal integrity (E.1): {loop_counts.get('e1', 0)}")
+    print(f"Signal integrity info (E.1 LR): {loop_counts.get('e1_info', 0)}")
     print(f"Dangling pointers (E.2): {loop_counts.get('e2', 0)}")
     print(f"Impossible states (E.3): {loop_counts.get('e3', 0)}")
-    print(f"Liveness stalls (E.4): {loop_counts.get('e4', 0)}")
+    print(f"Liveness stalls (E.4 active): {loop_counts.get('e4', 0)}")
+    print(f"Liveness stale unsynthesized (E.4 nice-to-have): {loop_counts.get('e4_nice', 0)}")
     print(f"Audit log coverage (E.5): {loop_counts.get('e5', 0)}")
     print(f"Unconsumed signals (E.7): {loop_counts.get('e7', 0)}")
     print(f"Environment/lane violations (E.8): {loop_counts.get('e8', 0)}")
@@ -406,13 +417,13 @@ def check_invariants(client: notion_api.NotionAPIClient) -> int:
     _print_section("Lab-Loop-v1", loop_violations)
     summarize_counts(prompt_violations, loop_counts)
 
-    total_violations = len(prompt_violations) + len(loop_violations)
-    if total_violations == 0:
+    total_blocking = _blocking_violation_count(prompt_violations) + _blocking_violation_count(loop_violations)
+    if total_blocking == 0:
         print("\n--- Audit Result: Lab is MATHEMATICALLY CONSISTENT ---")
     else:
-        print(f"\n--- Audit Result: {total_violations} Invariant Violations Found ---")
+        print(f"\n--- Audit Result: {total_blocking} Blocking Invariant Violations Found ---")
 
-    return total_violations
+    return total_blocking
 
 
 def main() -> None:

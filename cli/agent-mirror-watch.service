@@ -1,0 +1,20 @@
+[Unit]
+Description=Notion Agent Mirror — file-watch sync daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/sam/dev/projects/notion-forge
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/sam/dev/projects/notion-forge/cli/.venv/bin/python cli/agent_mirror.py watch cli/mirrors/ --interval 10
+Restart=on-failure
+RestartSec=30
+
+# Don't pollute journal with empty polls
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=agent-mirror
+
+[Install]
+WantedBy=default.target

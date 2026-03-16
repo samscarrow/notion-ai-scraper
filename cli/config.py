@@ -8,31 +8,41 @@ TEMPLATE_DATA_JSON = os.path.expanduser(
     "~/dev/projects/agent-env/dev/.agents/template-data.json"
 )
 
-# Default hardcoded values (as fallbacks if template-data.json is missing)
-DEFAULT_SPACE_ID = "f04bc8a1-18df-42d1-ba9f-961c491cdc1b"
-DEFAULT_WORK_ITEMS_DB_ID = "daeb64d4-e5a8-4a7b-b0dc-7555cbc3def6"
-DEFAULT_LAB_PROJECTS_DB_ID = "389645af-0e4f-479e-a910-79b169a99462"
-DEFAULT_PROMPT_ENGINEERING_DB_ID = "47d13520-73fd-4d9f-bdc0-1f32fd3d6483"
-DEFAULT_AUDIT_LOG_DB_ID = "f3a4d67a-5734-4ea4-908b-458f1c63f875"
-DEFAULT_LAB_CONTROL_DB_ID = "3efb3ef6-4c7a-4dc1-a7c5-74982bfe5bcc"
-DEFAULT_CHATSEARCH_PROJECT_ID = "f7cca113-ad21-4261-a170-4a88441a0e66"
-DEFAULT_LIBRARIAN_WORKFLOW_ID = "882193ee-37d8-4367-95eb-49ddf86aed9d"
-DEFAULT_LIBRARIAN_BOT_RUNTIME = "31ce7cc7-01d5-81e4-a7d6-0027b142ad0b"
-DEFAULT_LIBRARIAN_BOT_DRAFT = "31ce7cc7-01d5-81de-9caf-00278a693357"
+# Default hardcoded values (as fallbacks if template-data.json is missing).
+# Lab-specific defaults are empty — populate via env vars or template-data.json.
+DEFAULT_SPACE_ID = ""
+DEFAULT_WORK_ITEMS_DB_ID = ""
+DEFAULT_LAB_PROJECTS_DB_ID = ""
+DEFAULT_PROMPT_ENGINEERING_DB_ID = ""
+DEFAULT_AUDIT_LOG_DB_ID = ""
+DEFAULT_LAB_CONTROL_DB_ID = ""
+DEFAULT_CHATSEARCH_PROJECT_ID = ""
+DEFAULT_LIBRARIAN_WORKFLOW_ID = ""
+DEFAULT_LIBRARIAN_BOT_RUNTIME = ""
+DEFAULT_LIBRARIAN_BOT_DRAFT = ""
 
 @dataclass(frozen=True)
 class Config:
     notion_token: str
     space_id: str
-    work_items_db_id: str
-    lab_projects_db_id: str
-    prompt_engineering_db_id: str
-    audit_log_db_id: str
-    lab_control_db_id: str
-    chatsearch_project_id: str
-    librarian_notion_internal_id: str
-    librarian_bot_runtime: str
-    librarian_bot_draft: str
+    work_items_db_id: str = ""
+    lab_projects_db_id: str = ""
+    prompt_engineering_db_id: str = ""
+    audit_log_db_id: str = ""
+    lab_control_db_id: str = ""
+    chatsearch_project_id: str = ""
+    librarian_notion_internal_id: str = ""
+    librarian_bot_runtime: str = ""
+    librarian_bot_draft: str = ""
+
+    @property
+    def has_lab_config(self) -> bool:
+        """True when Lab-specific database IDs are configured."""
+        return bool(
+            self.work_items_db_id
+            and self.audit_log_db_id
+            and self.lab_control_db_id
+        )
 
     @classmethod
     def from_env(cls) -> "Config":

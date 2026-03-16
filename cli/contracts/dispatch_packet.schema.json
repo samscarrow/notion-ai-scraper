@@ -42,6 +42,7 @@
     },
     "prompt_notes":    {"type": ["string", "null"]},
     "github_issue_url": {"type": ["string", "null"], "format": "uri"},
+    "cascade_depth":   {"type": "integer", "minimum": 1, "default": 1},
     "created_at":      {"type": "string", "format": "date-time"},
     "constraints": {
       "type": "object",

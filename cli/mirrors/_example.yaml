@@ -1,0 +1,32 @@
+# Agent Mirror Manifest
+# Defines the desired state for a Notion AI agent.
+# `agent_mirror.py sync <manifest>` will diff against live state and apply changes.
+#
+# The `target` field references an agent key in agents.yaml.
+# All other fields are optional — only declared fields are synced.
+
+target: bay_view_consulting  # key in agents.yaml
+
+# Instructions: path to a local markdown file (relative to cli/ or absolute)
+# Supports {{page:uuid}}, {{agent:uuid}} mention syntax.
+instructions: mirrors/bay_view_consulting.md
+
+# Model: opus | sonnet | auto | chatgpt | or raw codename
+model: opus
+
+# MCP servers: declarative list. Servers not in this list will be REMOVED.
+# Set `managed: false` to skip removal of unlisted servers.
+mcp_servers:
+  managed: true  # if true, unlisted servers are removed
+  servers:
+    - name: "Oracle DB"
+      url: "https://mcp.scarrow.net/mcp/oracle"
+    - name: "Docs"
+      url: "https://mcp.scarrow.net/mcp/docs"
+
+# Page access: declarative list of Notion pages/databases the agent can read/write.
+# page_access:
+#   - id: "abc12345-..."
+#     role: reader        # reader | read_and_write
+#   - id: "def67890-..."
+#     role: read_and_write

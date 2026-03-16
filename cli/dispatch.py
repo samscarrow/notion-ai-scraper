@@ -77,8 +77,109 @@ def _date_start(props: dict, key: str) -> str | None:
     return ((props.get(key, {}) or {}).get("date") or {}).get("start")
 
 
+def _checkbox(props: dict, key: str) -> bool:
+    return (props.get(key, {}) or {}).get("checkbox", False)
+
+
+def _number(props: dict, key: str) -> int | float | None:
+    return (props.get(key, {}) or {}).get("number")
+
+
 def _relation_ids(props: dict, key: str) -> list[str]:
     return [r["id"] for r in (props.get(key, {}) or {}).get("relation", []) if r.get("id")]
+
+
+# ── Lab Control queries ──────────────────────────────────────────────────────
+
+# Cache Lab Control values with a short TTL to avoid repeated API calls.
+_lab_control_cache: dict[str, tuple[float, dict]] = {}
+_LAB_CONTROL_TTL = 60  # seconds
+
+
+def _query_lab_control(
+    client: notion_api.NotionAPIClient,
+    parameter: str,
+) -> dict[str, Any] | None:
+    """Query the Lab Control database for a named parameter row.
+
+    Returns {"flag": bool, "description": str} or None if not found.
+    Results are cached for 60 seconds.
+    """
+    import time as _time
+
+    now = _time.monotonic()
+    cached = _lab_control_cache.get(parameter)
+    if cached and (now - cached[0]) < _LAB_CONTROL_TTL:
+        return cached[1]
+
+    cfg = get_config()
+    pages = client.query_all(
+        cfg.lab_control_db_id,
+        filter_payload={
+            "property": "Parameter",
+            "title": {"equals": parameter},
+        },
+    )
+    if not pages:
+        _lab_control_cache[parameter] = (now, None)
+        return None
+
+    props = pages[0].get("properties", {})
+    result = {
+        "flag": _checkbox(props, "Flag"),
+        "value": _number(props, "Value"),
+    }
+    _lab_control_cache[parameter] = (now, result)
+    return result
+
+
+def check_gates(
+    work_item_id: str | None = None,
+    client: notion_api.NotionAPIClient | None = None,
+) -> dict[str, Any]:
+    """Programmatic Pre-Flight + Cascade Depth gate check.
+
+    If work_item_id is provided, checks both Pre-Flight and Cascade Depth.
+    If omitted, checks Pre-Flight only (for agents not operating on a
+    specific Work Item).
+
+    Returns:
+        {"proceed": True, "cascade_depth": N}
+    or:
+        {"halt": True, "reason": "...", "detail": "..."}
+    """
+    if client is None:
+        client = notion_api.NotionAPIClient(get_config().notion_token)
+
+    # G1: Pre-Flight Mode
+    pf = _query_lab_control(client, "Pre-Flight Mode")
+    if pf and pf["flag"]:
+        return {
+            "halt": True,
+            "reason": "pre_flight_active",
+            "detail": "Pre-Flight Mode is active. All dispatch suspended.",
+        }
+
+    # G2: Cascade Depth (only when a Work Item is in scope)
+    depth = 1
+    if work_item_id:
+        page = client.retrieve_page(work_item_id)
+        props = page.get("properties", {})
+        raw_depth = _number(props, "Cascade Depth")
+        if raw_depth is not None:
+            depth = int(raw_depth)
+
+        max_depth_row = _query_lab_control(client, "Max Cascade Depth")
+        max_depth = int(max_depth_row["value"]) if max_depth_row and max_depth_row["value"] is not None else 5
+
+        if depth >= max_depth:
+            return {
+                "halt": True,
+                "reason": "cascade_depth_exceeded",
+                "detail": f"Cascade depth {depth} >= limit {max_depth}.",
+            }
+
+    return {"proceed": True, "cascade_depth": depth}
 
 
 # ── Core functions ───────────────────────────────────────────────────────────
@@ -187,8 +288,26 @@ def build_dispatch_packet(
     if not environment:
         environment = "dev"
 
+    # ── Cascade depth ────────────────────────────────────────────────────
+    cascade_depth = _number(props, "Cascade Depth")
+    if cascade_depth is None:
+        cascade_depth = 1
+    else:
+        cascade_depth = int(cascade_depth)
+
     # ── Validation ───────────────────────────────────────────────────────
     errors: list[str] = []
+
+    # V13: Pre-Flight Mode (checked first — blocks everything)
+    pf = _query_lab_control(client, "Pre-Flight Mode")
+    if pf and pf["flag"]:
+        errors.append("V13: Pre-Flight Mode active — all dispatch suspended")
+
+    # V14: Cascade Depth
+    max_depth_row = _query_lab_control(client, "Max Cascade Depth")
+    max_depth = int(max_depth_row["value"]) if max_depth_row and max_depth_row["value"] is not None else 5
+    if cascade_depth >= max_depth:
+        errors.append(f"V14: Cascade depth {cascade_depth} >= limit {max_depth}")
 
     # V1: valid UUID
     try:
@@ -276,6 +395,7 @@ def build_dispatch_packet(
         "type": item_type,
         "prompt_notes": prompt_notes,
         "github_issue_url": github_issue_url,
+        "cascade_depth": cascade_depth,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "constraints": {
             "can_code": lane_caps.get("can_code", False),

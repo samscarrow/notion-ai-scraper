@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Notion Forge — Dashboard</title>
+  <link rel="stylesheet" href="/static/dashboard.css" />
+</head>
+<body>
+  <div id="app">
+    <nav class="sidebar">
+      <div class="sidebar-header">
+        <span class="logo-mark">◈</span>
+        <span class="logo-text">notion-forge</span>
+      </div>
+      <div class="sidebar-section-label">Databases</div>
+      <ul class="db-nav" id="db-nav"></ul>
+      <div class="sidebar-footer" id="sidebar-footer"></div>
+    </nav>
+
+    <div class="content">
+      <header class="topbar">
+        <div class="topbar-title">
+          <h1 id="db-title">Select a database</h1>
+          <span class="badge" id="row-count"></span>
+        </div>
+        <div class="topbar-controls">
+          <label class="control-label">
+            Limit
+            <input id="limit-input" type="number" value="100" min="10" max="200" step="10" />
+          </label>
+          <button id="refresh-btn" class="btn btn-secondary" disabled>Refresh</button>
+          <button id="aggregate-btn" class="btn btn-secondary" disabled>Full scan</button>
+        </div>
+      </header>
+
+      <section id="kpi-row" class="kpi-row" style="display:none"></section>
+
+      <section id="charts-grid" class="charts-grid" style="display:none"></section>
+
+      <div id="empty-state" class="empty-state">
+        <div class="empty-icon">◈</div>
+        <p>Choose a database from the sidebar to visualize it.</p>
+        <p class="muted">Charts are generated automatically from your Notion database schema.</p>
+      </div>
+
+      <div id="error-state" class="error-state" style="display:none">
+        <p class="error-icon">⚠</p>
+        <p id="error-msg"></p>
+      </div>
+
+      <div id="loading-state" class="loading-state" style="display:none">
+        <div class="spinner"></div>
+        <p>Fetching from Notion…</p>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>
