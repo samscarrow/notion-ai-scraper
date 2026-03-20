@@ -15,3 +15,8 @@ test/__pycache__/
 .web-ext-ignore
 conversations.csv
 *.txt
+cli/eval/results/
+cli/eval/essays/unbelievable-story.md
+cli/eval/essays/gilded-age.md
+gemini-conversation-*.json
+tmp/

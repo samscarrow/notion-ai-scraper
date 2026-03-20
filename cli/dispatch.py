@@ -42,7 +42,7 @@ VALID_LANES = set(LANE_CAPABILITIES["lanes"].keys())
 VALID_ENVIRONMENTS = set(ENV_RESTRICTIONS["environments"].keys())
 DISPATCH_VIA_DEFAULTS = LANE_CAPABILITIES["dispatch_via_defaults"]
 VALID_DISPATCH_VIA = set(DISPATCH_VIA_DEFAULTS.keys())
-VALID_TYPES = {"Gauntlet", "Measurement Track", "Literature Survey", "Design Spec", "Feasibility Analysis", "Other"}
+VALID_TYPES = {"Gauntlet", "Measurement Track", "Literature Survey", "Design Spec", "Feasibility Analysis", "Implementation", "Operational", "Review", "Experiment", "Fact-Check", "Other"}
 
 
 # ── Property extraction helpers ──────────────────────────────────────────────
