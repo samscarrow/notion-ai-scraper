@@ -517,6 +517,22 @@ def test_evaluate_drift_skips_t7_before_contract_rollout():
     assert not any(finding["code"] == "T.7" for finding in report["findings"])
 
 
+def test_evaluate_drift_handles_naive_page_timestamps_for_rollout_filtering():
+    snapshot = _make_snapshot()
+    snapshot["contracts"][0]["rollout_started_at"] = "2026-03-21T00:00:00+00:00"
+    page = _make_recent_page(prompt_notes="")
+    page["created_time"] = "2026-03-19T00:00:00"
+    page["last_edited_time"] = "2026-03-19T01:00:00"
+    page["properties"]["Dispatch Requested Received At"] = {
+        "type": "date",
+        "date": {"start": "2026-03-19T00:00:00"},
+    }
+
+    report = lab_topology.evaluate_drift(snapshot, recent_work_items=[page])
+
+    assert not any(finding["code"] == "T.7" for finding in report["findings"])
+
+
 def test_evaluate_drift_flags_missing_disposition_when_successor_exists():
     snapshot = _make_snapshot()
     page = _make_recent_page(superseded_by=["successor-1"])

@@ -21,6 +21,7 @@ contracts:
     source: work_items
     target: lab_dispatcher
     database: work_items
+    rollout_started_at: "2026-03-21T00:00:00+00:00"
     trigger_fields:
       - Dispatch Requested Received At
     consumed_fields:
