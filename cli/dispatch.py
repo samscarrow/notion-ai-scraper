@@ -635,9 +635,33 @@ def stamp_dispatch_consumed(
     """Mark a Work Item as consumed: set timestamp, status, and run_id.
 
     Returns the updated page properties on success.
+    Raises ValueError if the item has already been consumed (race guard).
     """
     if client is None:
         client = notion_api.NotionAPIClient(get_config().notion_token)
+
+    # ── Race guard: reject if already consumed ──────────────────────────
+    try:
+        current = client.retrieve_page(work_item_id)
+        props = current.get("properties", {})
+        consumed_at = _date_start(props, "Dispatch Requested Consumed At")
+        current_status = _status(props)
+        if consumed_at:
+            existing_run_id = _text(props, "run_id")
+            return {
+                "status": "already_consumed",
+                "work_item_id": work_item_id,
+                "run_id": existing_run_id,
+                "consumed_at": consumed_at,
+            }
+        if current_status not in (None, "Not Started", "Prompt Requested"):
+            return {
+                "status": "wrong_status",
+                "work_item_id": work_item_id,
+                "current_status": current_status,
+            }
+    except Exception:
+        pass  # Proceed on retrieval failure — better to stamp than to block
 
     cfg = get_config()
     now = notion_api.now_iso()

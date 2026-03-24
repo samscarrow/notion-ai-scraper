@@ -111,6 +111,20 @@ def register(mcp, cfg):
         client = _get_notion_api_client()
         result = dispatch.stamp_dispatch_consumed(work_item_id, run_id, client)
 
+        if result.get("status") == "already_consumed":
+            return (
+                f"**Already consumed** (race guard).\n\n"
+                f"- Work Item: `{result['work_item_id']}`\n"
+                f"- Existing Run ID: `{result['run_id']}`\n"
+                f"- Consumed At: `{result['consumed_at']}`"
+            )
+        if result.get("status") == "wrong_status":
+            return (
+                f"**Cannot consume** — Work Item status is `{result['current_status']}` "
+                f"(expected Not Started or Prompt Requested).\n\n"
+                f"- Work Item: `{result['work_item_id']}`"
+            )
+
         return (
             f"**Dispatch consumed.**\n\n"
             f"- Work Item: `{result['work_item_id']}`\n"
