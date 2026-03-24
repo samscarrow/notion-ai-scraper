@@ -104,7 +104,7 @@ def _handle_issue_closed(url: str, summary: str):
     """Issue-closed path with dedup guard.
 
     If the PR merge handler already ran first it will have set Status to
-    'Awaiting Intake' and cleared GitHub Issue URL.  In that case the Work
+    'Awaiting Intake' while preserving GitHub Issue URL. In that case the Work
     Item won't be found (URL cleared) OR it will be found but already in
     the target state — either way skip to avoid a double audit-log entry
     and a redundant Notion write.

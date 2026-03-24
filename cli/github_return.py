@@ -41,7 +41,6 @@ def perform_return(client: notion_api.NotionAPIClient, page_id: str, summary: st
         "Outcome": {"rich_text": [{"text": {"content": summary}}]} if summary else {},
         "Run Date": {"date": {"start": notion_api.now_iso()}},
         "Return Received At": {"date": {"start": notion_api.now_iso()}},
-        "GitHub Issue URL": {"url": None},  # Clear so re-dispatch creates a fresh issue
     }
     
     print(f"Updating Work Item {page_id} to 'Awaiting Intake'. Awaiting Intake Clerk.")

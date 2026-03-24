@@ -118,7 +118,6 @@ def _update_work_item_complete(page_id: str, summary: str, from_status: str | No
             "Status": {"status": {"name": "Awaiting Intake"}},
             "Return Received At": {"date": {"start": ts}},
             "Return Consumed At": {"date": {"start": ts}},
-            "GitHub Issue URL": {"url": None},
         }
     }
     _notion_request("PATCH", update_url, json=payload)
