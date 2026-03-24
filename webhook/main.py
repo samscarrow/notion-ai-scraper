@@ -594,29 +594,34 @@ def _stamp_dispatch_consumed(page_id: str, run_id: str):
             logger.warning("Audit log write failed in _stamp_dispatch_consumed: %s", e)
 
 
-# Execution planes that support automated forwarding via OpenClaw hook.
-# All other Dispatch Via values (Claude Code, Gemini, Cursor, Codex, Copilot, Manual)
-# require manual dispatch — the work item is stamped consumed and a human operator
-# picks it up in their tool of choice.
-_OPENCLAW_PLANES = {"Claude", "Antigravity"}
+# Execution planes that support automated dispatch via run-lab-dispatch.sh.
+_OPENCLAW_PLANES = {"Claude", "Claude Code", "Antigravity", "Gemini", "Cursor", "Codex", "Copilot"}
+
+OPENCLAW_SSH_HOST = os.environ.get("OPENCLAW_SSH_HOST", "nix")
+OPENCLAW_DISPATCH_CMD = os.environ.get(
+    "OPENCLAW_DISPATCH_CMD",
+    "sudo docker exec -i openclaw /home/node/nix-docker-configs/openclaw/run-lab-dispatch.sh --inside",
+)
 
 
 def _forward_to_openclaw(packet: dict):
-    """POST the dispatch packet to OpenClaw to spawn the lane agent."""
-    if not OPENCLAW_HOOK_URL:
-        logger.info("OPENCLAW_HOOK_URL not set — dispatch packet not forwarded")
-        return
-    headers = {"Content-Type": "application/json"}
-    if OPENCLAW_HOOK_TOKEN:
-        headers["Authorization"] = f"Bearer {OPENCLAW_HOOK_TOKEN}"
+    """Pipe dispatch packet to run-lab-dispatch.sh via SSH (fire-and-forget)."""
+    import subprocess
+    packet_json = json.dumps(packet)
+    cmd = f"ssh {OPENCLAW_SSH_HOST} {OPENCLAW_DISPATCH_CMD}"
     try:
-        resp = requests.post(OPENCLAW_HOOK_URL, json={"packet": packet}, headers=headers, timeout=10)
-        if resp.status_code >= 400:
-            logger.warning("OpenClaw hook returned %s for run_id=%s: %s", resp.status_code, packet.get("run_id"), resp.text[:300])
-        else:
-            logger.info("OpenClaw hook accepted run_id=%s (lane=%s)", packet.get("run_id"), packet.get("execution_lane"))
+        proc = subprocess.Popen(
+            cmd, shell=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        proc.stdin.write(packet_json.encode())
+        proc.stdin.close()
+        logger.info("Spawned run-lab-dispatch.sh (pid=%s) for %s (run_id=%s, lane=%s)",
+                     proc.pid, packet.get("work_item_name"), packet.get("run_id"), packet.get("execution_lane"))
     except Exception as e:
-        logger.error("OpenClaw hook call failed for run_id=%s: %s", packet.get("run_id"), e)
+        logger.error("Failed to spawn run-lab-dispatch.sh for run_id=%s: %s", packet.get("run_id"), e)
 
 
 def _process_notion_dispatch(page_id: str):
@@ -694,19 +699,33 @@ async def notion_dispatch_webhook(
     background_tasks: BackgroundTasks,
     x_notion_signature: str = Header(None),
 ):
-    """Notion automation webhook — fires when 'Dispatch Requested' is checked.
+    """Notion webhook — handles both subscription verification and dispatch events.
 
-    Configure the Notion automation body template as: {"page_id": "{{page.id}}"}
+    Flow 1 (verification): Notion sends {"verification_token": "..."} during setup.
+    Flow 2 (event): page.properties_updated on Work Items DB triggers dispatch.
+    Flow 3 (legacy): {"page_id": "..."} from native Notion automation.
     """
     payload_bytes = await request.body()
-
-    if not _verify_notion_signature(payload_bytes, x_notion_signature):
-        raise HTTPException(status_code=401, detail="Invalid Notion signature")
 
     try:
         payload = json.loads(payload_bytes)
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    # ── Subscription verification (one-time setup) ───────────────────
+    if "verification_token" in payload and "type" not in payload:
+        token = payload["verification_token"]
+        logger.info("Notion webhook verification token: %s", token)
+        return {"status": "verification_received", "token": token}
+
+    # ── Signature verification on real events ────────────────────────
+    if not _verify_notion_signature(payload_bytes, x_notion_signature):
+        raise HTTPException(status_code=401, detail="Invalid Notion signature")
+
+    # ── Filter: only process page.properties_updated or legacy format ─
+    event_type = payload.get("type", "")
+    if event_type and event_type != "page.properties_updated":
+        return {"status": "ignored", "reason": f"event_type={event_type}"}
 
     raw_id = payload.get("page_id") or (payload.get("entity") or {}).get("id")
     if not raw_id:
