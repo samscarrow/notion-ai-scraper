@@ -1555,6 +1555,154 @@ def grant_resource_access(
     return msg
 
 
+# ── Claude.ai Project tools ──────────────────────────────────────────────────
+# Manage Claude.ai Projects (instructions, knowledge files) via internal web API.
+# Auth: Firefox session cookies, same pattern as Notion tools.
+
+import claude_cookie_extract
+import claude_client as _claude_client
+
+_claude_project_client = None
+
+
+def _get_claude_client() -> _claude_client.ClaudeProjectClient:
+    global _claude_project_client
+    if _claude_project_client is None:
+        cookie_header = claude_cookie_extract.get_cookie_header()
+        org_id = os.environ.get("CLAUDE_ORG_ID")
+        if not org_id:
+            from urllib.request import Request, urlopen
+            req = Request("https://claude.ai/api/organizations")
+            req.add_header("Cookie", cookie_header)
+            req.add_header("Content-Type", "application/json")
+            req.add_header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0")
+            with urlopen(req) as resp:
+                orgs = json.loads(resp.read())
+            if not orgs:
+                raise ValueError("No Claude.ai organizations found.")
+            org_id = orgs[0]["uuid"]
+        _claude_project_client = _claude_client.ClaudeProjectClient(cookie_header, org_id)
+    return _claude_project_client
+
+
+@mcp.tool()
+def claude_list_projects(limit: int = 30) -> str:
+    """List Claude.ai Projects."""
+    client = _get_claude_client()
+    projects = client.list_projects(limit=limit)
+    lines = []
+    for p in projects:
+        docs = p.get("docs_count", 0) or 0
+        lines.append(f'{p["uuid"]}  {p["name"]}  ({docs} docs)')
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def claude_list_docs(project_id: str) -> str:
+    """List knowledge files in a Claude.ai Project."""
+    client = _get_claude_client()
+    docs = client.list_docs(project_id)
+    lines = []
+    for d in docs:
+        tokens = d.get("estimated_token_count", "?")
+        lines.append(f'{d["uuid"]}  {d["file_name"]}  ({tokens} tokens)')
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def claude_get_instructions(project_id: str) -> str:
+    """Get the system prompt / instructions for a Claude.ai Project."""
+    client = _get_claude_client()
+    project = client.get_project(project_id)
+    return project.get("prompt_template", "")
+
+
+@mcp.tool()
+def claude_set_instructions(project_id: str, instructions: str) -> str:
+    """Update the system prompt / instructions for a Claude.ai Project.
+
+    Args:
+        project_id: The project UUID.
+        instructions: The full instructions text to set.
+    """
+    client = _get_claude_client()
+    client.update_project(project_id, prompt_template=instructions)
+    return f"Instructions updated for project {project_id}."
+
+
+@mcp.tool()
+def claude_upload_doc(project_id: str, file_name: str, content: str) -> str:
+    """Upload a knowledge file to a Claude.ai Project.
+
+    Args:
+        project_id: The project UUID.
+        file_name: Name for the file in the project.
+        content: The file content (text/markdown).
+    """
+    client = _get_claude_client()
+    result = client.upload_doc(project_id, file_name, content)
+    tokens = result.get("estimated_token_count", "?")
+    return f'Uploaded {file_name} → {result["uuid"]} ({tokens} tokens)'
+
+
+@mcp.tool()
+def claude_delete_doc(project_id: str, doc_uuid: str) -> str:
+    """Delete a knowledge file from a Claude.ai Project.
+
+    Args:
+        project_id: The project UUID.
+        doc_uuid: The UUID of the doc to delete (from claude_list_docs).
+    """
+    client = _get_claude_client()
+    client.delete_doc(project_id, doc_uuid)
+    return f"Deleted {doc_uuid}"
+
+
+@mcp.tool()
+def claude_sync_docs(project_id: str, files: str) -> str:
+    """Sync local files to a Claude.ai Project's knowledge base.
+
+    Replaces docs with matching filenames (delete + re-upload). Adds new ones.
+    Skips files whose content hasn't changed.
+
+    Args:
+        project_id: The project UUID.
+        files: Comma-separated list of absolute file paths to sync.
+    """
+    client = _get_claude_client()
+    remote_docs = client.list_docs(project_id)
+    remote_by_name = {d["file_name"]: d for d in remote_docs}
+
+    file_paths = [f.strip() for f in files.split(",")]
+    lines = []
+    for file_path in file_paths:
+        file_name = os.path.basename(file_path)
+        with open(file_path) as f:
+            content = f.read()
+
+        if file_name in remote_by_name:
+            remote_doc = remote_by_name[file_name]
+            if remote_doc.get("content", "").strip() == content.strip():
+                lines.append(f"  skip  {file_name} (unchanged)")
+                continue
+            client.delete_doc(project_id, remote_doc["uuid"])
+            result = client.upload_doc(project_id, file_name, content)
+            lines.append(f"  update  {file_name} → {result['uuid']}")
+        else:
+            result = client.upload_doc(project_id, file_name, content)
+            lines.append(f"  add  {file_name} → {result['uuid']}")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def claude_get_memory(project_id: str) -> str:
+    """Get the project memory entries for a Claude.ai Project."""
+    client = _get_claude_client()
+    memory = client.get_memory(project_id)
+    return json.dumps(memory, indent=2)
+
+
 # ── Dispatch tools (conditional) ─────────────────────────────────────────────
 # Registered only when Lab-specific config is present (work_items, audit_log,
 # lab_control database IDs). Sam's env populates these via op run --env-file;

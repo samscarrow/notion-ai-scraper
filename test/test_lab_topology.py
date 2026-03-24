@@ -21,6 +21,12 @@ def _make_snapshot() -> dict:
             "property_id_to_name": {
                 "drra": "Dispatch Requested Received At",
                 "drca": "Dispatch Requested Consumed At",
+                "ldra": "Lab Dispatch Requested At",
+                "ldca": "Lab Dispatch Consumed At",
+                "lrpa": "Lab Results Posted At",
+                "dmode": "Dispatch Mode",
+                "dblock": "Dispatch Block",
+                "rrdy": "Repo Ready",
                 "pn": "Prompt Notes",
                 "sc": "Synthesis Completed At",
                 "scoa": "Synthesis Consumed At",
@@ -33,6 +39,12 @@ def _make_snapshot() -> dict:
             "property_name_to_type": {
                 "Dispatch Requested Received At": "date",
                 "Dispatch Requested Consumed At": "date",
+                "Lab Dispatch Requested At": "date",
+                "Lab Dispatch Consumed At": "date",
+                "Lab Results Posted At": "date",
+                "Dispatch Mode": "select",
+                "Dispatch Block": "select",
+                "Repo Ready": "checkbox",
                 "Prompt Notes": "rich_text",
                 "Synthesis Completed At": "date",
                 "Synthesis Consumed At": "date",
@@ -45,6 +57,12 @@ def _make_snapshot() -> dict:
             "property_name_to_id": {
                 "Dispatch Requested Received At": "drra",
                 "Dispatch Requested Consumed At": "drca",
+                "Lab Dispatch Requested At": "ldra",
+                "Lab Dispatch Consumed At": "ldca",
+                "Lab Results Posted At": "lrpa",
+                "Dispatch Mode": "dmode",
+                "Dispatch Block": "dblock",
+                "Repo Ready": "rrdy",
                 "Prompt Notes": "pn",
                 "Synthesis Completed At": "sc",
                 "Synthesis Consumed At": "scoa",
@@ -163,7 +181,7 @@ def _make_snapshot() -> dict:
         "trigger_fields": ["Dispatch Requested Received At"],
         "consumed_fields": ["Dispatch Requested Consumed At"],
         "produced_fields": ["Prompt Notes"],
-        "required_artifacts": ["Prompt Notes"],
+        "required_artifacts": ["Dispatch Requested Consumed At"],
         "selector": {},
         "upstream_complete_fields": ["Dispatch Requested Received At"],
         "required_access": "read_and_write",
@@ -198,6 +216,12 @@ def _make_recent_page(
     superseded_by: list[str] | None = None,
     item_type: str | None = None,
     project_ids: list[str] | None = None,
+    dispatch_mode: str | None = None,
+    dispatch_block: str | None = None,
+    repo_ready: bool = False,
+    lab_dispatch_requested_at: str | None = None,
+    lab_dispatch_consumed_at: str | None = None,
+    lab_results_posted_at: str | None = None,
 ) -> dict:
     return {
         "id": "page-1",
@@ -209,6 +233,31 @@ def _make_recent_page(
                 "type": "date",
                 "date": {"start": "2026-03-19T00:00:00Z"},
             },
+            "Dispatch Requested Consumed At": {
+                "type": "date",
+                "date": {"start": "2026-03-19T00:05:00Z"},
+            },
+            "Lab Dispatch Requested At": {
+                "type": "date",
+                "date": {"start": lab_dispatch_requested_at} if lab_dispatch_requested_at else None,
+            },
+            "Lab Dispatch Consumed At": {
+                "type": "date",
+                "date": {"start": lab_dispatch_consumed_at} if lab_dispatch_consumed_at else None,
+            },
+            "Lab Results Posted At": {
+                "type": "date",
+                "date": {"start": lab_results_posted_at} if lab_results_posted_at else None,
+            },
+            "Dispatch Mode": {
+                "type": "select",
+                "select": {"name": dispatch_mode} if dispatch_mode else None,
+            },
+            "Dispatch Block": {
+                "type": "select",
+                "select": {"name": dispatch_block} if dispatch_block else None,
+            },
+            "Repo Ready": {"type": "checkbox", "checkbox": repo_ready},
             "Prompt Notes": {
                 "type": "rich_text",
                 "rich_text": [{"plain_text": prompt_notes}] if prompt_notes else [],
@@ -451,10 +500,15 @@ def test_evaluate_drift_flags_missing_permission():
 
 def test_evaluate_drift_flags_t7_missing_downstream_artifact():
     snapshot = _make_snapshot()
-    report = lab_topology.evaluate_drift(snapshot, recent_work_items=[_make_recent_page(prompt_notes="")])
+    page = _make_recent_page(prompt_notes="")
+    page["properties"]["Dispatch Requested Consumed At"] = {
+        "type": "date",
+        "date": None,
+    }
+    report = lab_topology.evaluate_drift(snapshot, recent_work_items=[page])
 
     assert any(
-        finding["code"] == "T.7" and "Prompt Notes" in finding["detail"]
+        finding["code"] == "T.7" and "Dispatch Requested Consumed At" in finding["detail"]
         for finding in report["findings"]
     )
 
@@ -531,6 +585,42 @@ def test_evaluate_drift_handles_naive_page_timestamps_for_rollout_filtering():
     report = lab_topology.evaluate_drift(snapshot, recent_work_items=[page])
 
     assert not any(finding["code"] == "T.7" for finding in report["findings"])
+
+
+def test_evaluate_drift_flags_incubate_items_that_enter_executable_dispatch():
+    snapshot = _make_snapshot()
+    page = _make_recent_page(dispatch_mode="incubate")
+
+    report = lab_topology.evaluate_drift(snapshot, recent_work_items=[page])
+
+    assert any(
+        finding["code"] == "T.11" and "incubate" in finding["detail"]
+        for finding in report["findings"]
+    )
+
+
+def test_evaluate_drift_flags_execute_items_that_are_not_repo_ready():
+    snapshot = _make_snapshot()
+    page = _make_recent_page(dispatch_mode="execute", repo_ready=False)
+
+    report = lab_topology.evaluate_drift(snapshot, recent_work_items=[page])
+
+    assert any(
+        finding["code"] == "T.11" and "repo readiness" in finding["detail"]
+        for finding in report["findings"]
+    )
+
+
+def test_evaluate_drift_flags_lab_dispatch_without_results():
+    snapshot = _make_snapshot()
+    page = _make_recent_page(
+        dispatch_mode="incubate",
+        lab_dispatch_requested_at="2026-03-19T00:00:00Z",
+    )
+
+    report = lab_topology.evaluate_drift(snapshot, recent_work_items=[page])
+
+    assert any(finding["code"] == "T.12" for finding in report["findings"])
 
 
 def test_evaluate_drift_flags_missing_disposition_when_successor_exists():

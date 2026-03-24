@@ -41,11 +41,23 @@
       "enum": ["Gauntlet", "Measurement Track", "Literature Survey", "Design Spec", "Feasibility Analysis", "Implementation", "Operational", "Review", "Experiment", "Fact-Check", "Other"]
     },
     "prompt_notes":    {"type": ["string", "null"]},
+    "repo_url": {"type": ["string", "null"], "format": "uri"},
     "github_issue_url": {"type": ["string", "null"], "format": "uri"},
     "cascade_depth":   {"type": "integer", "minimum": 1, "default": 1},
     "concurrency_group": {"type": ["string", "null"]},
     "execution_budget": {"type": ["number", "null"]},
     "retry_count": {"type": "integer", "minimum": 0, "default": 0},
+    "dispatch_mode": {
+      "type": "string",
+      "enum": ["execute", "incubate"],
+      "default": "execute"
+    },
+    "dispatch_block": {
+      "type": "string",
+      "enum": ["none", "pre_repo_incubation", "safety_hold"],
+      "default": "none"
+    },
+    "repo_ready": {"type": "boolean", "default": false},
     "escalation_level": {
       "type": "string",
       "enum": ["Normal", "Needs Sam", "Critical"],

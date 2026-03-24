@@ -40,6 +40,9 @@ _ACCESS_STRENGTH = {
     "read_and_write": 2,
 }
 _TIMELINE_FIELDS = [
+    "Lab Dispatch Requested At",
+    "Lab Dispatch Consumed At",
+    "Lab Results Posted At",
     "Dispatch Requested Received At",
     "Dispatch Requested Consumed At",
     "Prompt Request Received At",
@@ -1222,6 +1225,49 @@ def evaluate_drift(
         if not project_id:
             continue
         fork_counts_by_project[project_id] = fork_counts_by_project.get(project_id, 0) + 1
+
+    for item in recent_summaries:
+        dispatch_mode = (item.get("Dispatch Mode") or "").strip().lower()
+        dispatch_block = (item.get("Dispatch Block") or "").strip().lower()
+        repo_ready = bool(item.get("Repo Ready"))
+        lab_requested = bool(item.get("Lab Dispatch Requested At"))
+        dispatch_requested = bool(item.get("Lab Dispatch Requested At") or item.get("Dispatch Requested Received At"))
+        executable_artifacts_written = bool(item.get("Dispatch Requested Consumed At") or item.get("Prompt Request Received At"))
+        lab_completed = bool(item.get("Lab Results Posted At"))
+        subject = item.get("Item Name") or item["id"]
+
+        if dispatch_mode == "incubate" and executable_artifacts_written:
+            _add_finding(
+                findings,
+                "T.11",
+                "MUST-FIX",
+                subject,
+                "Dispatch Mode is incubate, but executable dispatch artifacts were written",
+            )
+        if dispatch_mode == "execute" and dispatch_requested and not repo_ready:
+            _add_finding(
+                findings,
+                "T.11",
+                "MUST-FIX",
+                subject,
+                "Dispatch Mode is execute, but repo readiness was false when executable dispatch was requested",
+            )
+        if dispatch_block in {"pre_repo_incubation", "safety_hold"} and executable_artifacts_written:
+            _add_finding(
+                findings,
+                "T.11",
+                "MUST-FIX",
+                subject,
+                f"Dispatch Block '{dispatch_block}' is active, but executable dispatch artifacts were written",
+            )
+        if lab_requested and not lab_completed:
+            _add_finding(
+                findings,
+                "T.12",
+                "MUST-FIX",
+                subject,
+                "Lab-only dispatch was requested, but Lab Results Posted At is still empty",
+            )
 
     for item in recent_summaries:
         if not item.get("Synthesis Consumed At"):

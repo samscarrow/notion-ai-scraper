@@ -1,6 +1,6 @@
 # notion-forge
 
-Firefox extension + Tampermonkey script + Python CLI + MCP server for capturing and managing Notion AI chat conversations and agent instructions.
+Firefox extension + Tampermonkey script + Python CLI + MCP server for capturing and managing Notion AI chat conversations, agent instructions, and Claude.ai Projects.
 
 ## Environment
 
@@ -40,7 +40,7 @@ cli/.venv/bin/python -c "import sys; sys.path.insert(0,'cli'); import notion_cli
 
 - Entry: `cli/mcp_server.py`, registered in `.mcp.json`
 - Server name: `notion-agents`
-- Tools: `list_agents`, `list_workspace_agents`, `sync_registry`, `dump_agent`, `update_agent`, `publish_agent`, `discover_agent`, `register_agent`, `remove_agent`, `create_agent`, `get_agent_tools`, `add_agent_mcp_server`, `remove_agent_mcp_server`, `set_agent_model`, `grant_resource_access`, `chat_with_agent`, `get_conversation`, `describe_database`, `query_database`, `count_database`, `get_agent_triggers`, `get_db_automations`, `check_gates`, `get_dispatchable_items`, `build_dispatch_packet`, `stamp_dispatch_consumed`, `handle_final_return`
+- Tools: `list_agents`, `list_workspace_agents`, `sync_registry`, `dump_agent`, `update_agent`, `publish_agent`, `discover_agent`, `register_agent`, `remove_agent`, `create_agent`, `get_agent_tools`, `add_agent_mcp_server`, `remove_agent_mcp_server`, `set_agent_model`, `grant_resource_access`, `chat_with_agent`, `get_conversation`, `describe_database`, `query_database`, `count_database`, `get_agent_triggers`, `get_db_automations`, `check_gates`, `get_dispatchable_items`, `build_dispatch_packet`, `stamp_dispatch_consumed`, `handle_final_return`, `claude_list_projects`, `claude_list_docs`, `claude_get_instructions`, `claude_set_instructions`, `claude_upload_doc`, `claude_delete_doc`, `claude_sync_docs`, `claude_get_memory`
 - `describe_database(database_id)` returns the schema (property names, types, select/status options). **Always call this before `query_database` if you don't know the exact property names and types.** The filter type key in `query_database` must match the property's actual type (e.g. `status` not `select` for status-type properties). `query_database` auto-corrects common mismatches, but `describe_database` prevents them entirely.
 - `chat_with_agent(agent_name, message, wait=True)` sends a message and returns the agent's response. Automatically creates a thread if none exist — no UI interaction needed.
 - `create_agent(name, space_id)` creates a new agent programmatically (workflow + instruction page + sidebar + initial publish).
@@ -88,4 +88,7 @@ Notion databases have two distinct UUIDs. Using the wrong one will result in a 4
 | `cli/contracts/` | JSON schemas + configs for dispatch contract |
 | `cli/test_dispatch.py` | Dispatch adapter unit tests |
 | `cli/agent_instructions/evidence_verifier.md` | Evidence Verifier agent instructions (source of truth) |
+| `cli/claude_cli.py` | Claude.ai Project sync CLI |
+| `cli/claude_client.py` | Claude.ai Projects API client (internal web API) |
+| `cli/claude_cookie_extract.py` | Firefox cookie extraction for Claude.ai auth |
 | `.mcp.json` | MCP server registration |

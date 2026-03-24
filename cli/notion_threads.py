@@ -69,6 +69,54 @@ def _extract_inference_turn(step: dict) -> dict | None:
     return turn
 
 
+def _extract_system_turn(step: dict) -> dict | None:
+    step_type = step.get("type")
+    if step_type == "config":
+        value = step.get("value") or {}
+        return {
+            "role": "system",
+            "content": f"Workflow config initialized for {value.get('type') or 'unknown'} thread.",
+            "stepType": step_type,
+            "workflowId": value.get("workflowId"),
+        }
+    if step_type == "context":
+        value = step.get("value") or {}
+        summary_bits = []
+        if value.get("surface"):
+            summary_bits.append(f"surface={value['surface']}")
+        if value.get("agentName"):
+            summary_bits.append(f"agent={value['agentName']}")
+        if value.get("context_page_id"):
+            summary_bits.append(f"context_page_id={value['context_page_id']}")
+        return {
+            "role": "system",
+            "content": "Context initialized" + (f" ({', '.join(summary_bits)})" if summary_bits else "."),
+            "stepType": step_type,
+            "context": value,
+        }
+    if step_type == "agent-trigger":
+        data = step.get("data") or {}
+        update = data.get("update") or {}
+        after = (update.get("after") or {})
+        before = (update.get("before") or {})
+        summary = {
+            "triggerId": step.get("triggerId"),
+            "workflowId": step.get("workflowId"),
+            "afterUrl": after.get("url"),
+            "itemName": after.get("Item Name") or before.get("Item Name"),
+            "dispatchRequestedReceivedAt": after.get("date:Dispatch Requested Received At:start"),
+            "labDispatchRequestedAt": after.get("date:Lab Dispatch Requested At:start"),
+        }
+        target_name = summary["itemName"] or summary["afterUrl"] or "unknown target"
+        return {
+            "role": "system",
+            "content": f"Trigger received for {target_name}.",
+            "stepType": step_type,
+            "trigger": summary,
+        }
+    return None
+
+
 def get_thread_conversation(thread_id: str, token_v2: str,
                              user_id: str | None = None) -> dict:
     thread_records = read_records("thread", [thread_id], token_v2, user_id)
@@ -122,6 +170,16 @@ def get_thread_conversation(thread_id: str, token_v2: str,
                 if author:
                     turn_data["createdById"] = author
                 turns.append(turn_data)
+
+        elif step.get("type") in ("config", "context", "agent-trigger"):
+            turn = _extract_system_turn(step)
+            if turn:
+                turn["msgId"] = mid
+                if ts:
+                    turn["timestamp"] = ts
+                if author:
+                    turn["createdById"] = author
+                turns.append(turn)
 
         elif (step.get("type") == "agent-tool-result"
               and step.get("state") == "applied"
@@ -224,11 +282,13 @@ def list_workflow_threads(notion_internal_id: str, space_id: str,
             "spaceId": space_id,
             "limit": limit,
         }
-        if user_id:
-            payload["userId"] = user_id
         if cursor:
             payload["cursor"] = cursor
 
+        # Notion's workflow activity UI requests this endpoint without userId.
+        # Passing userId narrows the result set to user-owned/manual chats and
+        # hides property-trigger runs, which makes trigger activity appear
+        # missing even when the UI shows recent workflow failures.
         data = _normalize_record_map(
             _post("getInferenceTranscriptsForWorkflow", payload, token_v2, user_id)
         )
@@ -318,6 +378,48 @@ def archive_workflow_threads(notion_internal_id: str, space_id: str,
         "threadIds": archived_ids,
         "threads": threads,
         "skippedTriggerThreads": len(threads) - len(manual_ids),
+    }
+
+
+def find_stale_trigger_threads(notion_internal_id: str, space_id: str,
+                               token_v2: str, user_id: str | None = None,
+                               limit: int = 100) -> dict:
+    threads = list_workflow_threads(notion_internal_id, space_id, token_v2, user_id, limit=limit)
+    wf = notion_agent_config.get_workflow_record(notion_internal_id, token_v2, user_id)
+    current_artifact = ((wf.get("data") or {}).get("published_artifact_pointer") or {}).get("id")
+
+    stale_threads = []
+    for thread in threads:
+        if not thread.get("trigger_id"):
+            continue
+        thread_id = thread.get("id")
+        if not thread_id:
+            continue
+        record = read_records("thread", [thread_id], token_v2, user_id, space_id=space_id).get(thread_id) or {}
+        artifact_id = (((record.get("data") or {}).get("workflow_artifact_pointer") or {}).get("id"))
+        if current_artifact and artifact_id and artifact_id != current_artifact:
+            stale_threads.append({
+                "id": thread_id,
+                "trigger_id": thread.get("trigger_id"),
+                "title": thread.get("title"),
+                "workflow_artifact_id": artifact_id,
+                "current_artifact_id": current_artifact,
+            })
+
+    return {
+        "currentArtifactId": current_artifact,
+        "threads": stale_threads,
+        "threadIds": [thread["id"] for thread in stale_threads],
+        "count": len(stale_threads),
+    }
+
+
+def archive_selected_workflow_threads(thread_ids: list[str], space_id: str,
+                                      token_v2: str, user_id: str | None = None) -> dict:
+    archived_ids = archive_threads(thread_ids, space_id, token_v2, user_id)
+    return {
+        "count": len(archived_ids),
+        "threadIds": archived_ids,
     }
 
 

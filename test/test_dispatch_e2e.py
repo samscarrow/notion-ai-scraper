@@ -160,6 +160,9 @@ def _make_work_item(
     execution_budget: int | float | None = None,
     concurrency_group: str = "",
     project_ids: list[str] | None = None,
+    dispatch_mode: str | None = None,
+    repo_ready: bool = True,
+    dispatch_block: str | None = None,
 ) -> tuple[str, dict]:
     """Build a dispatchable work item page dict."""
     page_id = page_id or str(uuid.uuid4())
@@ -197,6 +200,9 @@ def _make_work_item(
         "Execution Budget": {"type": "number", "number": execution_budget},
         "Concurrency Group": {"type": "rich_text", "rich_text": [{"plain_text": concurrency_group}]} if concurrency_group else {"type": "rich_text", "rich_text": []},
         "Synthesis Consumed At": {"type": "date", "date": None},
+        "Dispatch Mode": {"type": "select", "select": {"name": dispatch_mode} if dispatch_mode else None},
+        "Repo Ready": {"type": "checkbox", "checkbox": repo_ready},
+        "Dispatch Block": {"type": "select", "select": {"name": dispatch_block} if dispatch_block else None},
     }
     if project_ids:
         props["Project"] = {"type": "relation", "relation": [{"id": project_id} for project_id in project_ids]}
@@ -477,7 +483,7 @@ class TestOpenClawE2E:
         assert [item["name"] for item in items] == ["FOCUS-1"]
 
         held_result = dispatch.build_dispatch_packet(held_item_id, mock)
-        assert any("V18" in error for error in held_result["errors"])
+        assert any("V21" in error for error in held_result["errors"])
 
         focus_result = dispatch.build_dispatch_packet(focus_item_id, mock)
         assert focus_result["errors"] == []

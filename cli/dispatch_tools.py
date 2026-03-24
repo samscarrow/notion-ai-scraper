@@ -40,8 +40,9 @@ def register(mcp, cfg):
         """
         Find Work Items ready for dispatch by an execution plane.
 
-        Returns items where Dispatch Requested Received At is set, Dispatch Requested
-        Consumed At is empty, and Status is Not Started or Prompt Requested.
+        Returns items where Lab Dispatch Requested At is set (or legacy Dispatch
+        Requested Received At is set), Dispatch Requested Consumed At is empty,
+        and Status is Not Started or Prompt Requested.
         """
         client = _get_notion_api_client()
         items = dispatch.get_dispatchable_items(client)

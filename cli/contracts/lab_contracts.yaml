@@ -23,7 +23,7 @@ contracts:
     database: work_items
     rollout_started_at: "2026-03-21T00:00:00+00:00"
     trigger_fields:
-      - Dispatch Requested Received At
+      - Lab Dispatch Requested At
     consumed_fields:
       - Dispatch Requested Consumed At
     produced_fields:
@@ -32,11 +32,9 @@ contracts:
       - Prompt Request Received At
     required_artifacts:
       - Dispatch Requested Consumed At
-      - Prompt Request Received At
-      - Prompt Notes
     selector: {}
     upstream_complete_fields:
-      - Dispatch Requested Received At
+      - Lab Dispatch Requested At
     required_access: read_and_write
     evidence_sources:
       - kind: agent_trigger
@@ -173,6 +171,14 @@ contracts:
       - Synthesis Consumed At
       - Disposition
       - Superseded By
+      - Dispatch Mode
+      - Repo Ready
+      - Dispatch Block
+      - Dispatch Via
+      - Execution Lane
+      - Environment
+      - Branch
+      - Lab Dispatch Requested At
     required_artifacts:
       - Synthesis Consumed At
     selector: {}
@@ -220,6 +226,14 @@ contracts:
       - Triage Routed At
     produced_fields:
       - Superseded By
+      - Dispatch Mode
+      - Repo Ready
+      - Dispatch Block
+      - Dispatch Via
+      - Execution Lane
+      - Environment
+      - Branch
+      - Lab Dispatch Requested At
     required_artifacts: []
     selector:
       Routing Signal:

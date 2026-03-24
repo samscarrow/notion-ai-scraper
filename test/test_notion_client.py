@@ -12,6 +12,74 @@ import notion_threads  # noqa: E402
 
 
 class NotionClientTests(unittest.TestCase):
+    def test_get_thread_conversation_surfaces_trigger_system_messages(self) -> None:
+        thread_id = "thread-1"
+        with mock.patch.object(
+            notion_threads,
+            "read_records",
+            side_effect=[
+                {
+                    thread_id: {
+                        "id": thread_id,
+                        "space_id": "space-1",
+                        "messages": ["msg-config", "msg-context", "msg-trigger"],
+                        "data": {"title": "Untitled chat"},
+                        "created_time": 100,
+                    }
+                },
+                {
+                    "msg-config": {
+                        "id": "msg-config",
+                        "step": {
+                            "type": "config",
+                            "value": {"type": "workflow", "workflowId": "workflow-1"},
+                        },
+                        "created_time": 101,
+                    },
+                    "msg-context": {
+                        "id": "msg-context",
+                        "step": {
+                            "type": "context",
+                            "value": {
+                                "surface": "custom_agent",
+                                "agentName": "Lab Dispatcher",
+                                "context_page_id": "page-1",
+                            },
+                        },
+                        "created_time": 102,
+                    },
+                    "msg-trigger": {
+                        "id": "msg-trigger",
+                        "step": {
+                            "type": "agent-trigger",
+                            "triggerId": "trigger-1",
+                            "workflowId": "workflow-1",
+                            "data": {
+                                "update": {
+                                    "after": {
+                                        "Item Name": "Adaptive Comparative Adjudication Engine",
+                                        "date:Lab Dispatch Requested At:start": "2026-03-24T14:00:00.000Z",
+                                    }
+                                }
+                            },
+                        },
+                        "created_time": 103,
+                    },
+                },
+            ],
+        ):
+            convo = notion_client.get_thread_conversation(thread_id, "token", "user-1")
+
+        self.assertEqual(convo["threadId"], thread_id)
+        self.assertEqual(
+            [turn["stepType"] for turn in convo["turns"]],
+            ["config", "context", "agent-trigger"],
+        )
+        self.assertEqual(
+            convo["turns"][2]["trigger"]["itemName"],
+            "Adaptive Comparative Adjudication Engine",
+        )
+
     def test_list_workflow_threads_follows_next_cursor(self) -> None:
         first_page = {
             "threadIds": ["thread-1", "thread-2"],
@@ -102,17 +170,57 @@ class NotionClientTests(unittest.TestCase):
         )
         first_payload = post_mock.call_args_list[0].args[1]
         second_payload = post_mock.call_args_list[1].args[1]
-        self.assertEqual(first_payload, {"workflowId": "workflow-1", "spaceId": "space-1", "limit": 2, "userId": "user-1"})
+        self.assertEqual(first_payload, {"workflowId": "workflow-1", "spaceId": "space-1", "limit": 2})
         self.assertEqual(
             second_payload,
             {
                 "workflowId": "workflow-1",
                 "spaceId": "space-1",
                 "limit": 2,
-                "userId": "user-1",
                 "cursor": "cursor-1",
             },
         )
+
+    def test_list_workflow_threads_ignores_user_id_to_keep_trigger_runs_visible(self) -> None:
+        with mock.patch.object(
+            notion_threads,
+            "_post",
+            return_value={
+                "threadIds": ["thread-trigger-1"],
+                "transcripts": [
+                    {
+                        "id": "thread-trigger-1",
+                        "created_at": 101,
+                        "created_by_display_name": "Lab Dispatcher",
+                        "trigger_id": "trigger-1",
+                        "type": "workflow",
+                    }
+                ],
+                "recordMap": {},
+            },
+        ) as post_mock:
+            threads = notion_client.list_workflow_threads(
+                "workflow-1",
+                "space-1",
+                "token",
+                "user-1",
+                limit=10,
+            )
+
+        self.assertEqual(
+            threads,
+            [
+                {
+                    "id": "thread-trigger-1",
+                    "created_at": 101,
+                    "created_by_display_name": "Lab Dispatcher",
+                    "trigger_id": "trigger-1",
+                    "type": "workflow",
+                }
+            ],
+        )
+        payload = post_mock.call_args.args[1]
+        self.assertNotIn("userId", payload)
 
     def test_archive_threads_uses_delete_chat_transaction_shape(self) -> None:
         with mock.patch.object(notion_threads, "_post", return_value={}) as post_mock:
@@ -171,7 +279,12 @@ class NotionClientTests(unittest.TestCase):
             "user-1",
             False,
         )
-        cleanup_mock.assert_called_once_with("workflow-1", "space-1", "token", "user-1")
+        cleanup_mock.assert_called_once_with(
+            "workflow-1",
+            "space-1",
+            "token",
+            "user-1",
+        )
 
     def test_publish_agent_skips_archive_on_warning(self) -> None:
         with mock.patch.object(
@@ -203,6 +316,64 @@ class NotionClientTests(unittest.TestCase):
 
         self.assertEqual(result["workflowArtifactId"], "artifact-1")
         self.assertEqual(result["threadCleanupWarning"], "cleanup failed")
+
+    def test_find_stale_trigger_threads_filters_by_artifact_mismatch(self) -> None:
+        threads = [
+            {"id": "manual-1"},
+            {"id": "trigger-stale", "trigger_id": "trigger-a"},
+            {"id": "trigger-current", "trigger_id": "trigger-b"},
+        ]
+        with mock.patch.object(
+            notion_threads,
+            "list_workflow_threads",
+            return_value=threads,
+        ), mock.patch.object(
+            notion_threads.notion_agent_config,
+            "get_workflow_record",
+            return_value={"data": {"published_artifact_pointer": {"id": "artifact-current"}}},
+        ), mock.patch.object(
+            notion_threads,
+            "get_thread_conversation",
+            return_value={"turns": []},
+        ), mock.patch.object(
+            notion_threads,
+            "read_records",
+            side_effect=[
+                {
+                    "trigger-stale": {"data": {"workflow_artifact_pointer": {"id": "artifact-old"}}},
+                },
+                {
+                    "trigger-current": {"data": {"workflow_artifact_pointer": {"id": "artifact-current"}}},
+                },
+            ],
+        ):
+            result = notion_threads.find_stale_trigger_threads(
+                "workflow-1",
+                "space-1",
+                "token",
+                "user-1",
+            )
+
+        self.assertEqual(result["currentArtifactId"], "artifact-current")
+        self.assertEqual(result["threadIds"], ["trigger-stale"])
+        self.assertEqual(result["count"], 1)
+
+    def test_archive_selected_workflow_threads_is_explicit(self) -> None:
+        with mock.patch.object(
+            notion_threads,
+            "archive_threads",
+            return_value=["trigger-1"],
+        ) as archive_mock:
+            result = notion_threads.archive_selected_workflow_threads(
+                ["trigger-1"],
+                "space-1",
+                "token",
+                "user-1",
+            )
+
+        archive_mock.assert_called_once_with(["trigger-1"], "space-1", "token", "user-1")
+        self.assertEqual(result["threadIds"], ["trigger-1"])
+        self.assertEqual(result["count"], 1)
 
 
 if __name__ == "__main__":

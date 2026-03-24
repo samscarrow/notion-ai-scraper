@@ -51,6 +51,9 @@ DEFAULT_ESCALATION_LEVEL = "Normal"
 BLOCKING_ESCALATION_LEVELS = {"Needs Sam", "Critical"}
 RETRY_ESCALATION_THRESHOLD = 2
 DEFAULT_MIN_TERMINAL_VALUE = "Any"
+DEFAULT_DISPATCH_MODE = "execute"
+BLOCKING_DISPATCH_MODES = {"incubate"}
+BLOCKING_DISPATCH_BLOCKS = {"pre_repo_incubation", "safety_hold"}
 
 
 # ── Property extraction helpers ──────────────────────────────────────────────
@@ -125,6 +128,7 @@ def _project_snapshot(
         "focus": False,
         "min_terminal_value": DEFAULT_MIN_TERMINAL_VALUE,
         "fork_budget": None,
+        "repo_url": None,
     }
     try:
         project_page = client.retrieve_page(project_id)
@@ -134,6 +138,7 @@ def _project_snapshot(
         snapshot["focus"] = _checkbox(props, "Focus")
         snapshot["min_terminal_value"] = _select(props, "Min Terminal Value") or DEFAULT_MIN_TERMINAL_VALUE
         snapshot["fork_budget"] = _number(props, "Fork Budget")
+        snapshot["repo_url"] = _url(props, "GitHub URL")
     except Exception:
         pass
 
@@ -170,12 +175,23 @@ def _resolve_queue_state(
         "id": None,
         "name": None,
         "max_active_items": DEFAULT_MAX_ACTIVE_ITEMS,
+        "repo_url": None,
     }
+    dispatch_mode = (_select(props, "Dispatch Mode") or DEFAULT_DISPATCH_MODE).strip().lower()
+    dispatch_block = (_select(props, "Dispatch Block") or "none").strip().lower()
+    explicit_repo_ready = _checkbox(props, "Repo Ready")
+    repo_ready = explicit_repo_ready or bool(project.get("repo_url"))
     retry_count = _int_value(_number(props, "Retry Count"), DEFAULT_RETRY_COUNT)
     escalation_level = _select(props, "Escalation Level") or DEFAULT_ESCALATION_LEVEL
     blocked_reason = _text(props, "Blocked Reason") or None
     project_active_count = active_project_counts.get(project_id, 0) if project_id else 0
     derived_block_reason = blocked_reason
+    if not derived_block_reason and dispatch_mode in BLOCKING_DISPATCH_MODES:
+        derived_block_reason = "Work item is marked for Lab-only incubation"
+    if not derived_block_reason and dispatch_block in BLOCKING_DISPATCH_BLOCKS:
+        derived_block_reason = f"Dispatch block is active ({dispatch_block})"
+    if not derived_block_reason and dispatch_mode == "execute" and not repo_ready:
+        derived_block_reason = "Repo execution is not ready for this work item"
     if not derived_block_reason and escalation_level in BLOCKING_ESCALATION_LEVELS:
         derived_block_reason = f"Escalated for human review ({escalation_level})"
     if not derived_block_reason and project_id and project_active_count >= project["max_active_items"]:
@@ -190,15 +206,22 @@ def _resolve_queue_state(
         "project_name": project["name"],
         "project_max_active_items": project["max_active_items"],
         "project_active_count": project_active_count,
+        "dispatch_mode": dispatch_mode,
+        "dispatch_block": dispatch_block,
+        "repo_ready": repo_ready,
         "retry_count": retry_count,
         "escalation_level": escalation_level,
         "blocked_reason": blocked_reason,
         "derived_block_reason": derived_block_reason,
         "execution_budget": _number(props, "Execution Budget"),
         "concurrency_group": _text(props, "Concurrency Group") or None,
+        "lab_dispatch_requested_at": _date_start(props, "Lab Dispatch Requested At"),
+        "lab_dispatch_consumed_at": _date_start(props, "Lab Dispatch Consumed At"),
+        "lab_results_posted_at": _date_start(props, "Lab Results Posted At"),
         "project_focus": bool(project.get("focus")),
         "project_min_terminal_value": project.get("min_terminal_value") or DEFAULT_MIN_TERMINAL_VALUE,
         "project_fork_budget": project.get("fork_budget"),
+        "project_repo_url": project.get("repo_url"),
     }
 
 
@@ -206,7 +229,12 @@ def _ready_dispatch_candidates(client: notion_api.NotionAPIClient) -> tuple[list
     cfg = get_config()
     filter_payload = {
         "and": [
-            {"property": "Dispatch Requested Received At", "date": {"is_not_empty": True}},
+            {
+                "or": [
+                    {"property": "Lab Dispatch Requested At", "date": {"is_not_empty": True}},
+                    {"property": "Dispatch Requested Received At", "date": {"is_not_empty": True}},
+                ]
+            },
             {"property": "Dispatch Requested Consumed At", "date": {"is_empty": True}},
             {
                 "or": [
@@ -243,6 +271,9 @@ def _ready_dispatch_candidates(client: notion_api.NotionAPIClient) -> tuple[list
             "project_id": queue_state["project_id"],
             "project_active_count": queue_state["project_active_count"],
             "project_max_active_items": queue_state["project_max_active_items"],
+            "dispatch_mode": queue_state["dispatch_mode"],
+            "dispatch_block": queue_state["dispatch_block"],
+            "repo_ready": queue_state["repo_ready"],
             "project_focus": queue_state["project_focus"],
             "project_min_terminal_value": queue_state["project_min_terminal_value"],
             "project_fork_budget": queue_state["project_fork_budget"],
@@ -252,6 +283,9 @@ def _ready_dispatch_candidates(client: notion_api.NotionAPIClient) -> tuple[list
             "execution_budget": queue_state["execution_budget"],
             "concurrency_group": queue_state["concurrency_group"],
             "escalation_level": queue_state["escalation_level"],
+            "lab_dispatch_requested_at": queue_state["lab_dispatch_requested_at"],
+            "lab_dispatch_consumed_at": queue_state["lab_dispatch_consumed_at"],
+            "lab_results_posted_at": queue_state["lab_results_posted_at"],
             "dispatch_requested_received_at": _date_start(props, "Dispatch Requested Received At"),
         })
 
@@ -365,8 +399,9 @@ def check_gates(
 def get_dispatchable_items(client: notion_api.NotionAPIClient | None = None) -> list[dict[str, Any]]:
     """Query Work Items DB for items ready to dispatch.
 
-    Criteria: Dispatch Requested Received At is set, Dispatch Requested Consumed At is empty,
-    Status in {Not Started, Prompt Requested}.
+    Criteria: Lab Dispatch Requested At is set (or legacy Dispatch Requested
+    Received At is set), Dispatch Requested Consumed At is empty, Status in
+    {Not Started, Prompt Requested}.
     """
     if client is None:
         client = notion_api.NotionAPIClient(get_config().notion_token)
@@ -490,29 +525,38 @@ def build_dispatch_packet(
         errors.append(f"V8: work item already has an active run_id '{existing_run_id}'")
 
     # V9: dispatch request must exist
-    received_at = _date_start(props, "Dispatch Requested Received At")
-    if not received_at:
-        errors.append("V9: Dispatch Requested Received At is empty (no dispatch request)")
+    requested_at = _date_start(props, "Lab Dispatch Requested At") or _date_start(props, "Dispatch Requested Received At")
+    if not requested_at:
+        errors.append("V9: Lab Dispatch Requested At is empty (no dispatch request)")
 
     # V10: not already consumed
     if consumed_at:
         errors.append(f"V10: Dispatch Requested Consumed At is already set ({consumed_at})")
 
+    if queue_state["dispatch_mode"] in BLOCKING_DISPATCH_MODES:
+        errors.append(f"V15: dispatch_mode '{queue_state['dispatch_mode']}' is Lab-only and cannot enter Factory dispatch")
+
+    if queue_state["dispatch_block"] in BLOCKING_DISPATCH_BLOCKS:
+        errors.append(f"V16: dispatch_block '{queue_state['dispatch_block']}' blocks dispatch")
+
+    if not queue_state["repo_ready"]:
+        errors.append("V17: repo execution is not ready (set Repo Ready or attach a project GitHub URL)")
+
     if queue_state["blocked_reason"]:
-        errors.append(f"V15: Blocked Reason is set ({queue_state['blocked_reason']})")
+        errors.append(f"V18: Blocked Reason is set ({queue_state['blocked_reason']})")
 
     if queue_state["escalation_level"] in BLOCKING_ESCALATION_LEVELS:
-        errors.append(f"V16: escalation_level '{queue_state['escalation_level']}' requires human review")
+        errors.append(f"V19: escalation_level '{queue_state['escalation_level']}' requires human review")
 
     if project_id and queue_state["project_active_count"] >= queue_state["project_max_active_items"]:
         errors.append(
-            "V17: project active item cap reached "
+            "V20: project active item cap reached "
             f"({queue_state['project_active_count']}/{queue_state['project_max_active_items']})"
         )
 
     _, focus_active = _ready_dispatch_candidates(client)
     if focus_active and not queue_state["project_focus"]:
-        errors.append("V18: project is outside the current focus candidate set")
+        errors.append("V21: project is outside the current focus candidate set")
 
     if errors and queue_state["derived_block_reason"] and queue_state["blocked_reason"] != queue_state["derived_block_reason"]:
         try:
@@ -562,9 +606,13 @@ def build_dispatch_packet(
         "execution_budget": queue_state["execution_budget"],
         "retry_count": queue_state["retry_count"],
         "escalation_level": queue_state["escalation_level"],
+        "dispatch_mode": queue_state["dispatch_mode"],
+        "dispatch_block": queue_state["dispatch_block"],
+        "repo_ready": queue_state["repo_ready"],
         "project_focus": queue_state["project_focus"],
         "project_min_terminal_value": queue_state["project_min_terminal_value"],
         "project_fork_budget": queue_state["project_fork_budget"],
+        "repo_url": queue_state["project_repo_url"],
         "portfolio_focus_active": focus_active,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "constraints": {
