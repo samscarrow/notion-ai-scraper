@@ -533,6 +533,10 @@ def build_dispatch_packet(
     if consumed_at:
         errors.append(f"V10: Dispatch Requested Consumed At is already set ({consumed_at})")
 
+    raw_dispatch_mode = _select(props, "Dispatch Mode")
+    if not raw_dispatch_mode:
+        errors.append("V20: Dispatch Mode is empty (must be 'execute' or 'incubate')")
+
     if queue_state["dispatch_mode"] in BLOCKING_DISPATCH_MODES:
         errors.append(f"V15: dispatch_mode '{queue_state['dispatch_mode']}' is Lab-only and cannot enter Factory dispatch")
 
