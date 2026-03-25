@@ -27,8 +27,6 @@ AUDIT_LOG_DATABASE_ID = os.environ.get("NOTION_AUDIT_LOG_DATABASE_ID", "4621be9a
 GITHUB_WEBHOOK_SECRET = os.environ.get("GITHUB_WEBHOOK_SECRET")
 RETURN_TOKEN = os.environ.get("OPENCLAW_RETURN_TOKEN", "")
 NOTION_WEBHOOK_SECRET = os.environ.get("NOTION_WEBHOOK_SECRET", "")
-OPENCLAW_HOOK_URL = os.environ.get("OPENCLAW_HOOK_URL", "")
-OPENCLAW_HOOK_TOKEN = os.environ.get("OPENCLAW_HOOK_TOKEN", "")
 
 HEADERS = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -560,10 +558,15 @@ async def openclaw_progress(
 
 
 # ──────────────────────────────────────────────────────────
-# Notion Automation Dispatch Webhook
-# Fires when "Dispatch Requested" checkbox is checked on a
-# Work Item. Stamps the item consumed and triggers OpenClaw.
+# Notion Webhook → Dispatch Poller Trigger
+# Receives page.properties_updated events and triggers the
+# dispatch-poller agent via the OpenClaw gateway. The poller
+# handles packet building, consumption, and execution.
 # ──────────────────────────────────────────────────────────
+
+OPENCLAW_GATEWAY_URL = os.environ.get("OPENCLAW_GATEWAY_URL", "http://openclaw:18789")
+OPENCLAW_GATEWAY_TOKEN = os.environ.get("OPENCLAW_GATEWAY_TOKEN", "")
+
 
 def _verify_notion_signature(payload_bytes: bytes, signature: str | None) -> bool:
     """Verify X-Notion-Signature (sha256=<hex>). Passes if secret not configured."""
@@ -575,128 +578,23 @@ def _verify_notion_signature(payload_bytes: bytes, signature: str | None) -> boo
     return hmac.compare_digest(expected, signature)
 
 
-def _stamp_dispatch_consumed(page_id: str, run_id: str):
-    """Set Dispatch Requested Consumed At, Status=In Progress, run_id on the Work Item."""
-    ts = now_iso()
-    _notion_request("PATCH", f"https://api.notion.com/v1/pages/{page_id}", json={
-        "properties": {
-            "Dispatch Requested Consumed At": {"date": {"start": ts}},
-            "Status": {"status": {"name": "In Progress"}},
-            "run_id": {"rich_text": [{"type": "text", "text": {"content": run_id}}]},
-        }
-    })
-    if AUDIT_LOG_DATABASE_ID:
-        try:
-            _notion_request("POST", "https://api.notion.com/v1/pages", json={
-                "parent": {"database_id": AUDIT_LOG_DATABASE_ID},
-                "properties": {
-                    "Transition": {"title": [{"text": {"content": "NotStarted→InProgress"}}]},
-                    "Work Item": {"relation": [{"id": page_id}]},
-                    "Agent": {"select": {"name": "Dispatch Adapter"}},
-                    "Consumption Timestamp": {"date": {"start": ts}},
-                },
-            })
-        except Exception as e:
-            logger.warning("Audit log write failed in _stamp_dispatch_consumed: %s", e)
-
-
-# Execution planes that support automated dispatch via run-lab-dispatch.sh.
-_OPENCLAW_PLANES = {"Claude", "Claude Code", "Antigravity", "Gemini", "Cursor", "Codex", "Copilot"}
-
-OPENCLAW_SSH_HOST = os.environ.get("OPENCLAW_SSH_HOST", "nix")
-OPENCLAW_DISPATCH_CMD = os.environ.get(
-    "OPENCLAW_DISPATCH_CMD",
-    "sudo docker exec -i openclaw /home/node/nix-docker-configs/openclaw/run-lab-dispatch.sh --inside",
-)
-
-
-def _forward_to_openclaw(packet: dict):
-    """Pipe dispatch packet to run-lab-dispatch.sh via SSH (fire-and-forget)."""
-    import subprocess
-    packet_json = json.dumps(packet)
-    cmd = f"ssh {OPENCLAW_SSH_HOST} {OPENCLAW_DISPATCH_CMD}"
+def _trigger_dispatch_poller(reason: str):
+    """Trigger the dispatch-poller via OpenClaw gateway webhook."""
     try:
-        proc = subprocess.Popen(
-            cmd, shell=True,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+        resp = requests.post(
+            f"{OPENCLAW_GATEWAY_URL}/hooks/agent",
+            json={
+                "message": f"Dispatch trigger: {reason}. Run your heartbeat now.",
+                "agentId": "dispatch-poller",
+                "name": "notion-webhook",
+                "wakeMode": "now",
+            },
+            headers={"Content-Type": "application/json", "x-openclaw-token": OPENCLAW_GATEWAY_TOKEN},
+            timeout=10,
         )
-        proc.stdin.write(packet_json.encode())
-        proc.stdin.close()
-        logger.info("Spawned run-lab-dispatch.sh (pid=%s) for %s (run_id=%s, lane=%s)",
-                     proc.pid, packet.get("work_item_name"), packet.get("run_id"), packet.get("execution_lane"))
+        logger.info("Triggered dispatch-poller (%s): %s", resp.status_code, reason)
     except Exception as e:
-        logger.error("Failed to spawn run-lab-dispatch.sh for run_id=%s: %s", packet.get("run_id"), e)
-
-
-def _process_notion_dispatch(page_id: str):
-    """Background task: fetch Work Item, route by execution plane.
-
-    OpenClaw planes (Claude, Antigravity): stamp consumed, forward to OpenClaw.
-    All other planes: ignored here — the Dispatcher agent owns their lifecycle.
-    """
-    import uuid as _uuid
-
-    try:
-        resp = _notion_request("GET", f"https://api.notion.com/v1/pages/{page_id}")
-        page = resp.json()
-    except Exception as e:
-        logger.error("Failed to fetch Work Item %s: %s", page_id, e)
-        return
-
-    props = page.get("properties", {})
-
-    def _prop_text(key, ptype="rich_text"):
-        parts = (props.get(key) or {}).get(ptype, [])
-        return "".join(t.get("plain_text", "") for t in parts).strip()
-
-    def _prop_select(key):
-        return ((props.get(key) or {}).get("select") or {}).get("name")
-
-    item_name = _prop_text("Item Name", "title")
-    dispatch_via = _prop_select("Dispatch Via")
-
-    # Non-OpenClaw planes are handled by the Dispatcher agent, not this webhook.
-    if dispatch_via not in _OPENCLAW_PLANES:
-        logger.info(
-            "Dispatch Via='%s' is not an OpenClaw plane — Dispatcher agent owns this lifecycle (item=%s)",
-            dispatch_via, item_name,
-        )
-        return
-
-    execution_lane = _prop_select("Execution Lane")
-    environment = _prop_select("Environment") or "dev"
-    objective = _prop_text("Objective")
-    consumed_at = ((props.get("Dispatch Requested Consumed At") or {}).get("date") or {}).get("start")
-
-    if consumed_at:
-        logger.info("Work Item %s already consumed — skipping duplicate dispatch", item_name)
-        return
-    if not objective:
-        logger.warning("Work Item %s has no objective — cannot dispatch", item_name)
-        return
-
-    run_id = str(_uuid.uuid4())
-
-    try:
-        _stamp_dispatch_consumed(page_id, run_id)
-    except Exception as e:
-        logger.error("stamp_dispatch_consumed failed for %s: %s", page_id, e)
-        return
-
-    packet = {
-        "version": "1.1",
-        "run_id": run_id,
-        "work_item_id": page_id,
-        "work_item_name": item_name,
-        "objective": objective,
-        "execution_lane": execution_lane,
-        "dispatch_via": dispatch_via,
-        "environment": environment,
-    }
-    _forward_to_openclaw(packet)
-    logger.info("Notion dispatch complete: item=%s run_id=%s lane=%s via=%s", item_name, run_id, execution_lane, dispatch_via)
+        logger.error("Failed to trigger dispatch-poller: %s", e)
 
 
 @app.post("/notion-dispatch")
@@ -705,11 +603,10 @@ async def notion_dispatch_webhook(
     background_tasks: BackgroundTasks,
     x_notion_signature: str = Header(None),
 ):
-    """Notion webhook — handles both subscription verification and dispatch events.
+    """Notion webhook — signal relay to the dispatch-poller.
 
     Flow 1 (verification): Notion sends {"verification_token": "..."} during setup.
-    Flow 2 (event): page.properties_updated on Work Items DB triggers dispatch.
-    Flow 3 (legacy): {"page_id": "..."} from native Notion automation.
+    Flow 2 (event): page.properties_updated → trigger dispatch-poller heartbeat.
     """
     payload_bytes = await request.body()
 
@@ -728,23 +625,15 @@ async def notion_dispatch_webhook(
     if not _verify_notion_signature(payload_bytes, x_notion_signature):
         raise HTTPException(status_code=401, detail="Invalid Notion signature")
 
-    # ── Filter: only process page.properties_updated or legacy format ─
+    # ── Filter event type ────────────────────────────────────────────
     event_type = payload.get("type", "")
     if event_type and event_type != "page.properties_updated":
         return {"status": "ignored", "reason": f"event_type={event_type}"}
 
-    raw_id = payload.get("page_id") or (payload.get("entity") or {}).get("id")
-    if not raw_id:
-        return {"status": "ignored", "reason": "no_page_id"}
-
-    try:
-        import uuid as _uuid
-        page_id = str(_uuid.UUID(str(raw_id).replace("-", "")))
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid page_id: {raw_id!r}")
-
-    background_tasks.add_task(_process_notion_dispatch, page_id)
-    return {"status": "accepted", "page_id": page_id}
+    # ── Trigger the dispatch-poller ──────────────────────────────────
+    page_id = (payload.get("entity") or {}).get("id", "unknown")
+    background_tasks.add_task(_trigger_dispatch_poller, f"page {page_id}")
+    return {"status": "triggered", "page_id": page_id}
 
 
 @app.get("/health")
