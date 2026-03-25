@@ -571,13 +571,17 @@ OPENCLAW_HOOKS_TOKEN = hashlib.sha256(f"hooks:{_GATEWAY_TOKEN}".encode()).hexdig
 
 
 def _verify_notion_signature(payload_bytes: bytes, signature: str | None) -> bool:
-    """Verify X-Notion-Signature (sha256=<hex>). Passes if secret not configured."""
+    """Verify X-Notion-Signature. Accepts HMAC (public API) or static token (native automation)."""
     if not NOTION_WEBHOOK_SECRET:
         return True
     if not signature:
         return False
-    expected = "sha256=" + hmac.new(NOTION_WEBHOOK_SECRET.encode(), msg=payload_bytes, digestmod=hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, signature)
+    # Public API webhook: sha256=<hmac>
+    if signature.startswith("sha256="):
+        expected = "sha256=" + hmac.new(NOTION_WEBHOOK_SECRET.encode(), msg=payload_bytes, digestmod=hashlib.sha256).hexdigest()
+        return hmac.compare_digest(expected, signature)
+    # Native automation: static token match
+    return hmac.compare_digest(NOTION_WEBHOOK_SECRET, signature)
 
 
 def _trigger_dispatch_poller(reason: str):
