@@ -659,7 +659,8 @@ def _conversation_to_markdown(convo: dict) -> str:
 
 @mcp.tool()
 @auth_retry
-def get_conversation(thread: str, format: str = "json") -> str:
+def get_conversation(thread: str, format: str = "json",
+                     since_msg_id: str | None = None) -> str:
     """
     Fetch a Notion AI conversation and return its full transcript.
 
@@ -670,6 +671,10 @@ def get_conversation(thread: str, format: str = "json") -> str:
 
     format: "json" (default) — full structured data (turns, toolCalls, model, timestamps)
             "md"            — Markdown transcript
+
+    since_msg_id: If provided, only returns turns that appear AFTER this message ID
+                  in the conversation. Useful for polling for new turns without
+                  re-reading the full transcript.
 
     Returns all conversation turns with role, content, thinking (CoT), model,
     and any tool calls (input + result) attached to each turn.
@@ -683,9 +688,76 @@ def get_conversation(thread: str, format: str = "json") -> str:
     thread_id = _resolve_thread_id(thread, token, user_id)
     convo = notion_client.get_thread_conversation(thread_id, token, user_id)
 
+    if since_msg_id:
+        turns = convo.get("turns") or []
+        after = False
+        filtered = []
+        for turn in turns:
+            if after:
+                filtered.append(turn)
+            elif (turn.get("msgId") or turn.get("id")) == since_msg_id:
+                after = True
+        convo = {**convo, "turns": filtered}
+
     if format == "md":
         return _conversation_to_markdown(convo)
     return json.dumps(convo, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+@auth_retry
+def check_agent_response(thread_id: str, after_msg_id: str,
+                         format: str = "text") -> str:
+    """
+    Non-blocking check for an agent response after a sent message.
+
+    Makes a single conversation fetch and returns the latest assistant turn
+    that appears after after_msg_id, or a "pending" status if none yet.
+
+    thread_id: UUID of the thread (returned by chat_with_agent).
+    after_msg_id: The message ID of the user turn (returned by chat_with_agent).
+    format: "text" (default) — plain response content
+            "json" — full turn object(s) as JSON
+
+    Returns one of:
+      - {"status": "pending"} — inference not yet started or still running
+      - {"status": "complete", "content": "...", "turns": [...]} — response ready
+
+    Call this repeatedly (every few seconds) until status is "complete".
+    For multi-step agents, content is the final assistant turn text.
+    """
+    if format not in ("text", "json"):
+        raise ValueError(f"format must be 'text' or 'json', got '{format}'")
+
+    token, user_id = _get_auth()
+    convo = notion_client.get_thread_conversation(thread_id, token, user_id)
+    turns = convo.get("turns") or []
+
+    found_user = False
+    assistant_turns = []
+    for turn in turns:
+        turn_id = turn.get("msgId") or turn.get("id")
+        if turn_id == after_msg_id:
+            found_user = True
+            continue
+        if found_user and turn.get("role") in ("assistant", "agent"):
+            content = turn.get("content") or turn.get("text") or ""
+            if isinstance(content, list):
+                content = "\n".join(str(c) for c in content)
+            if content.strip():
+                assistant_turns.append({**turn, "content": content.strip()})
+
+    if not assistant_turns:
+        return json.dumps({"status": "pending"})
+
+    last = assistant_turns[-1]
+    result = {
+        "status": "complete",
+        "content": last["content"],
+    }
+    if format == "json":
+        result["turns"] = assistant_turns
+    return json.dumps(result, ensure_ascii=False)
 
 
 @mcp.tool()
@@ -774,8 +846,10 @@ def chat_with_agent(agent_name: str, message: str, thread_id: str | None = None,
 
     return (
         f"Message sent (ID: {msg_id}) to thread {thread_id}{thread_note}.\n"
-        f"The agent inference has been triggered. Wait a few seconds, then call:\n"
-        f"get_conversation(thread='{thread_id}', format='md')"
+        f"Poll for the response (non-blocking, call every few seconds):\n"
+        f"  check_agent_response(thread_id='{thread_id}', after_msg_id='{msg_id}')\n"
+        f"Or fetch new turns only:\n"
+        f"  get_conversation(thread='{thread_id}', format='md', since_msg_id='{msg_id}')"
     )
 
 
