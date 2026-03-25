@@ -291,13 +291,13 @@ def check_lab_loop(
             if status == "Not Started" and synthesis_complete:
                 _record(violations, "E.3", "MUST-FIX", name, "Status is Not Started while Synthesis Complete is true")
                 counters["e3"] += 1
-            if status == "Prompt Requested" and not github_issue_url:
-                _record(violations, "E.3", "MUST-FIX", name, "Prompt Requested item is missing GitHub Issue URL")
+            if status == "Prompt Drafted" and not github_issue_url:
+                _record(violations, "E.3", "MUST-FIX", name, "Prompt Drafted item is missing GitHub Issue URL")
                 counters["e3"] += 1
 
         if last_edited:
-            if status == "Prompt Requested" and last_edited < now - timedelta(hours=24):
-                _record(violations, "E.4", "MUST-FIX", name, "Prompt Requested for more than 24 hours")
+            if status == "Prompt Drafted" and last_edited < now - timedelta(hours=24):
+                _record(violations, "E.4", "MUST-FIX", name, "Prompt Drafted for more than 24 hours")
                 counters["e4"] += 1
             if status == "In Progress" and last_edited < now - timedelta(days=7):
                 _record(violations, "E.4", "MUST-FIX", name, "In Progress for more than 7 days")

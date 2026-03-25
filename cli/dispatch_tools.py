@@ -42,7 +42,7 @@ def register(mcp, cfg):
 
         Returns items where Lab Dispatch Requested At is set (or legacy Dispatch
         Requested Received At is set), Dispatch Requested Consumed At is empty,
-        and Status is Not Started or Prompt Requested.
+        and Status is Not Started or Prompt Drafted.
         """
         client = _get_notion_api_client()
         items = dispatch.get_dispatchable_items(client)
@@ -121,7 +121,7 @@ def register(mcp, cfg):
         if result.get("status") == "wrong_status":
             return (
                 f"**Cannot consume** — Work Item status is `{result['current_status']}` "
-                f"(expected Not Started or Prompt Requested).\n\n"
+                f"(expected Not Started or Prompt Drafted).\n\n"
                 f"- Work Item: `{result['work_item_id']}`"
             )
 

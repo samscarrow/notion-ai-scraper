@@ -239,7 +239,7 @@ def _ready_dispatch_candidates(client: notion_api.NotionAPIClient) -> tuple[list
             {
                 "or": [
                     {"property": "Status", "status": {"equals": "Not Started"}},
-                    {"property": "Status", "status": {"equals": "Prompt Requested"}},
+                    {"property": "Status", "status": {"equals": "Prompt Drafted"}},
                 ]
             },
         ]
@@ -401,7 +401,7 @@ def get_dispatchable_items(client: notion_api.NotionAPIClient | None = None) -> 
 
     Criteria: Lab Dispatch Requested At is set (or legacy Dispatch Requested
     Received At is set), Dispatch Requested Consumed At is empty, Status in
-    {Not Started, Prompt Requested}.
+    {Not Started, Prompt Drafted}.
     """
     if client is None:
         client = notion_api.NotionAPIClient(get_config().notion_token)
@@ -654,7 +654,7 @@ def stamp_dispatch_consumed(
                 "run_id": existing_run_id,
                 "consumed_at": consumed_at,
             }
-        if current_status not in (None, "Not Started", "Prompt Requested"):
+        if current_status not in (None, "Not Started", "Prompt Drafted"):
             return {
                 "status": "wrong_status",
                 "work_item_id": work_item_id,
