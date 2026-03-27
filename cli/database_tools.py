@@ -456,8 +456,8 @@ def query_database(
     (created_by, created_time, etc.) are hidden by default — list them explicitly
     in 'properties' to show them.
 
-    database_id: The database page UUID (dashed or dashless), NOT the collection://
-        data source ID.
+    database_id: The UUID of the database itself (dashed or dashless), NOT a row's
+        page ID or a collection:// data source ID.
     filter: Optional JSON string with a Notion API filter object. The filter type
         key MUST match the property's actual type. Use describe_database to check.
         Example: '{"property": "Status", "status": {"equals": "Active"}}'
@@ -481,7 +481,7 @@ def query_database(
         effect when aggregate=True.
     """
     client = _get_notion_api_client()
-    db_id = _to_dashed_uuid(database_id)
+    db_id = _resolve_database_id(client, database_id)
 
     filter_obj = json.loads(filter) if filter else None
     sorts_obj = json.loads(sorts) if sorts else None
@@ -659,14 +659,15 @@ def count_database(
     Use this for "how many?" and "does X exist?" questions instead of fetching
     rows with query_database.
 
-    database_id: The database page UUID (dashed or dashless).
+    database_id: Database UUID or a page UUID inside the database (dashed or
+        dashless). If a page ID is given, the parent database is resolved automatically.
     filter: Optional JSON filter (same format as query_database).
     exact: If False (default), returns a fast existence check using 1 API call —
         answers "0 rows", "1 row", or "at least 2 rows". If True, pages through
         the full database to return an exact count (may make multiple API calls).
     """
     client = _get_notion_api_client()
-    db_id = _to_dashed_uuid(database_id)
+    db_id = _resolve_database_id(client, database_id)
 
     filter_obj = json.loads(filter) if filter else None
 
