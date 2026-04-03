@@ -1,0 +1,338 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "writers_room_step_output.schema.json",
+  "title": "Writers-Room Step Outputs",
+  "description": "Structured output schemas for each step of the Pontius writers-room pipeline. Each step's output is stored as a child page of the Scene Item. Schemas mirror OUTPUT_SCHEMAS.md from pontius/writers-room/.",
+  "oneOf": [
+    {"$ref": "#/$defs/source_audit"},
+    {"$ref": "#/$defs/scene_classification"},
+    {"$ref": "#/$defs/character_clearance"},
+    {"$ref": "#/$defs/motif_audit"},
+    {"$ref": "#/$defs/beat_sheet"},
+    {"$ref": "#/$defs/scene_draft"},
+    {"$ref": "#/$defs/stress_test"}
+  ],
+  "$defs": {
+
+    "confidence": {
+      "type": "string",
+      "enum": ["HIGH", "MEDIUM", "LOW"]
+    },
+
+    "source_audit": {
+      "type": "object",
+      "title": "Source Audit (Step 1)",
+      "description": "Historical Prosecutor output. WORKFLOW Step 1, OUTPUT_SCHEMAS Schema 1.",
+      "required": ["step", "task", "date", "sources_retrieved", "gaps_identified", "coverage_pct", "gap_count", "confidence"],
+      "properties": {
+        "step": {"type": "string", "const": "source_grounding"},
+        "task": {"type": "string", "description": "Brief description of the creative assignment."},
+        "date": {"type": "string", "format": "date"},
+        "sources_retrieved": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["source", "reference", "provenance"],
+            "properties": {
+              "source": {"type": "string", "description": "Source name (e.g. 'Josephus, Antiquities 18.85-89')."},
+              "reference": {"type": "string", "description": "Specific passage or section."},
+              "provenance": {
+                "type": "string",
+                "enum": ["independent", "pauline_self_testimony", "lukan_construction"],
+                "description": "Per CHARTER Three Pillars. Only 'independent' counts as grounds for/against the premise."
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "gaps_identified": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["element", "reason"],
+            "properties": {
+              "element": {"type": "string", "description": "Scene element needing invention."},
+              "reason": {"type": "string", "description": "Why no source exists."}
+            },
+            "additionalProperties": false
+          }
+        },
+        "evidence_grades": {
+          "type": "array",
+          "description": "Per RESEARCH_PROTOCOL burden ladder. Optional — populated for Level 3+ findings.",
+          "items": {
+            "type": "object",
+            "required": ["finding", "level", "grade"],
+            "properties": {
+              "finding": {"type": "string"},
+              "level": {"type": "integer", "minimum": 1, "maximum": 4, "description": "Burden ladder level (1=assertion, 2=observation, 3=argument, 4=defended claim)."},
+              "grade": {
+                "type": "string",
+                "enum": ["load_bearing", "supporting", "atmospheric"],
+                "description": "Evidence classification per RESEARCH_PROTOCOL."
+              },
+              "objection_protocol": {
+                "type": ["object", "null"],
+                "description": "Mandatory for Level 3+. Null for Level 1-2.",
+                "properties": {
+                  "counterargument": {"type": "string"},
+                  "falsification_evidence": {"type": "string"},
+                  "survives": {"type": "boolean"}
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "coverage_pct": {"type": "number", "minimum": 0, "maximum": 100},
+        "gap_count": {"type": "integer", "minimum": 0},
+        "confidence": {"$ref": "#/$defs/confidence"},
+        "confidence_justification": {"type": "string"},
+        "escalation_required": {"type": "boolean", "default": false},
+        "escalation_reasons": {
+          "type": "array", "items": {"type": "string"},
+          "description": "e.g. ['timeline_departure: scene places Pilate in Alexandria 35 CE — no independent source']"
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "scene_classification": {
+      "type": "object",
+      "title": "Scene Classification (Step 2)",
+      "description": "Canon Steward output. WORKFLOW Step 2, OUTPUT_SCHEMAS Schema 2.",
+      "required": ["step", "scene_name", "primary_type", "governing_voice", "justification", "failure_modes_to_watch", "confidence"],
+      "properties": {
+        "step": {"type": "string", "const": "scene_classification"},
+        "scene_name": {"type": "string"},
+        "primary_type": {
+          "type": "string",
+          "enum": ["political_inevitability", "transformation_chemistry", "governance_reality", "embodied_theology", "argument_as_drama"],
+          "description": "Per SCENE_PROTOCOLS.md. One type must be primary even if the scene blends elements."
+        },
+        "governing_voice": {
+          "type": "string",
+          "enum": ["martin_simon", "gilligan", "simon", "flanagan", "kushner"],
+          "description": "Per CHARTER.md Five Governing Voices."
+        },
+        "justification": {"type": "string", "description": "2-3 sentences on why this type."},
+        "secondary_elements": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["type", "governing_beats"],
+            "properties": {
+              "type": {"type": "string"},
+              "governing_beats": {"type": "array", "items": {"type": "integer"}}
+            },
+            "additionalProperties": false
+          }
+        },
+        "failure_modes_to_watch": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Specific ANTI_FLATTENING failure modes relevant to this scene type."
+        },
+        "confidence": {"$ref": "#/$defs/confidence"},
+        "confidence_justification": {"type": "string"},
+        "escalation_required": {"type": "boolean", "default": false},
+        "escalation_reasons": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+
+    "character_clearance": {
+      "type": "object",
+      "title": "Character Clearance (Step 3)",
+      "description": "Canon Steward output. WORKFLOW Step 3, OUTPUT_SCHEMAS Schema 3.",
+      "required": ["step", "scene_name", "characters", "escalation_required", "confidence"],
+      "properties": {
+        "step": {"type": "string", "const": "character_check"},
+        "scene_name": {"type": "string"},
+        "characters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "role_in_scene", "public_legibility", "self_story", "misread", "remainder"],
+            "properties": {
+              "name": {"type": "string"},
+              "role_in_scene": {"type": "string"},
+              "public_legibility": {"type": "string", "enum": ["respected", "at_risk"]},
+              "public_legibility_note": {"type": ["string", "null"]},
+              "self_story": {"type": "string", "enum": ["respected", "at_risk"]},
+              "self_story_note": {"type": ["string", "null"]},
+              "misread": {"type": "string", "enum": ["respected", "at_risk"]},
+              "misread_note": {"type": ["string", "null"]},
+              "remainder": {"type": "string", "enum": ["safe", "flagged"]},
+              "remainder_detail": {"type": ["string", "null"]}
+            },
+            "additionalProperties": false
+          }
+        },
+        "escalation_required": {"type": "boolean"},
+        "escalation_reasons": {"type": "array", "items": {"type": "string"}},
+        "confidence": {"$ref": "#/$defs/confidence"}
+      },
+      "additionalProperties": false
+    },
+
+    "motif_audit": {
+      "type": "object",
+      "title": "Motif Audit (Step 4)",
+      "description": "Canon Steward output. WORKFLOW Step 4, OUTPUT_SCHEMAS Schema 4.",
+      "required": ["step", "scene_name", "motifs_present", "new_motifs", "spine_occurrence", "escalation_required", "confidence"],
+      "properties": {
+        "step": {"type": "string", "const": "motif_audit"},
+        "scene_name": {"type": "string"},
+        "motifs_present": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["motif_name", "beat_location", "rule_1_no_explanation", "rule_2_no_staging", "rule_3_first_viewing", "rule_4_not_predictable"],
+            "properties": {
+              "motif_name": {"type": "string"},
+              "beat_location": {"type": "string"},
+              "rule_1_no_explanation": {"type": "string", "enum": ["pass", "fail"]},
+              "rule_1_note": {"type": "string"},
+              "rule_2_no_staging": {"type": "string", "enum": ["pass", "fail"]},
+              "rule_2_note": {"type": "string"},
+              "rule_3_first_viewing": {"type": "string", "enum": ["pass", "fail"]},
+              "rule_3_note": {"type": "string"},
+              "rule_4_not_predictable": {"type": "string", "enum": ["pass", "n_a"]},
+              "rule_4_note": {"type": "string"}
+            },
+            "additionalProperties": false
+          }
+        },
+        "new_motifs": {
+          "type": "array", "items": {"type": "string"},
+          "description": "Motifs not in MOTIF_REGISTRY. Non-empty triggers escalation."
+        },
+        "spine_occurrence": {
+          "type": "boolean",
+          "description": "True if 'You know' spine appears. Triggers escalation."
+        },
+        "escalation_required": {"type": "boolean"},
+        "escalation_reasons": {"type": "array", "items": {"type": "string"}},
+        "confidence": {"$ref": "#/$defs/confidence"}
+      },
+      "additionalProperties": false
+    },
+
+    "beat_sheet": {
+      "type": "object",
+      "title": "Beat Sheet (Step 5)",
+      "description": "Dramatic Architect output. WORKFLOW Step 5, OUTPUT_SCHEMAS Schema 5.",
+      "required": ["step", "scene_name", "scene_type", "location", "beats", "confidence"],
+      "properties": {
+        "step": {"type": "string", "const": "beat_construction"},
+        "scene_name": {"type": "string"},
+        "scene_type": {"type": "string", "description": "From Step 2 classification."},
+        "location": {"type": "string", "description": "Specific place, time of day."},
+        "beats": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["beat_number", "what_happens", "who_has_the_room", "what_shifts", "period_detail", "camera"],
+            "properties": {
+              "beat_number": {"type": "integer", "minimum": 1},
+              "what_happens": {"type": "string", "description": "3-5 sentences describing dramatic action."},
+              "who_has_the_room": {"type": "string", "description": "Character name."},
+              "what_shifts": {"type": "string", "description": "One sentence on what changes."},
+              "period_detail": {"type": "string", "description": "Specific object/practice/sensation that could only exist in this time and place."},
+              "camera": {
+                "type": "string",
+                "enum": ["above", "below", "close", "wide"],
+                "description": "Altitude is interpretation."
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "structural_notes": {
+          "type": "array", "items": {"type": "string"},
+          "description": "Pacing, transitions, altitude shifts."
+        },
+        "confidence": {"$ref": "#/$defs/confidence"}
+      },
+      "additionalProperties": false
+    },
+
+    "scene_draft": {
+      "type": "object",
+      "title": "Scene Draft (Step 6)",
+      "description": "Dramatic Architect output. WORKFLOW Step 6, OUTPUT_SCHEMAS Schema 6. Language Quarantine (CHARTER) and Abstraction Budget (ANTI_FLATTENING) enforced.",
+      "required": ["step", "scene_name", "format", "scene_text", "word_count", "confidence"],
+      "properties": {
+        "step": {"type": "string", "const": "scene_drafting"},
+        "scene_name": {"type": "string"},
+        "format": {"type": "string", "const": "screenplay"},
+        "scene_text": {
+          "type": "string",
+          "description": "Full screenplay format: INT./EXT., character names in caps, stage directions, dialogue, [END SCENE] marker."
+        },
+        "word_count": {"type": "integer", "minimum": 1},
+        "confidence": {"$ref": "#/$defs/confidence"},
+        "confidence_justification": {"type": "string", "description": "One sentence on register consistency."}
+      },
+      "additionalProperties": false
+    },
+
+    "stress_test": {
+      "type": "object",
+      "title": "Stress Test (Step 7)",
+      "description": "Dramatic Architect output. WORKFLOW Step 7, OUTPUT_SCHEMAS Schema 7. The 10-question final quality gate.",
+      "required": ["step", "scene_name", "tested_by", "date", "questions", "pass_count", "revision_required", "confidence"],
+      "properties": {
+        "step": {"type": "string", "const": "stress_test"},
+        "scene_name": {"type": "string"},
+        "tested_by": {"type": "string", "description": "Agent identifier."},
+        "date": {"type": "string", "format": "date"},
+        "questions": {
+          "type": "array",
+          "minItems": 10,
+          "maxItems": 10,
+          "items": {
+            "type": "object",
+            "required": ["number", "name", "result", "note"],
+            "properties": {
+              "number": {"type": "integer", "minimum": 1, "maximum": 10},
+              "name": {
+                "type": "string",
+                "enum": [
+                  "premise_invisibility",
+                  "remainder_test",
+                  "abstraction_budget",
+                  "seven_failure_modes",
+                  "period_specificity",
+                  "physical_grounding",
+                  "dialogue_register",
+                  "motif_discipline",
+                  "character_integrity",
+                  "ending_residue"
+                ]
+              },
+              "result": {"type": "string", "enum": ["pass", "fail"]},
+              "note": {"type": "string"}
+            },
+            "additionalProperties": false
+          }
+        },
+        "pass_count": {"type": "integer", "minimum": 0, "maximum": 10},
+        "revision_required": {"type": "boolean", "description": "True if any question fails."},
+        "revision_notes": {
+          "type": "array", "items": {"type": "string"},
+          "description": "Specific, actionable notes for each failure."
+        },
+        "escalation_required": {
+          "type": "boolean", "default": false,
+          "description": "True if premise_invisibility fails (premise proximity escalation)."
+        },
+        "escalation_reasons": {"type": "array", "items": {"type": "string"}},
+        "confidence": {"$ref": "#/$defs/confidence"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

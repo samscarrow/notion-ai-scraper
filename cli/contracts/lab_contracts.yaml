@@ -14,6 +14,7 @@ dispatch_policy:
     - Review
     - Experiment
     - Fact-Check
+    - Creative
     - Other
   defaults:
     dispatch_mode: execute
@@ -44,6 +45,7 @@ dispatch_policy:
     V19: { check: blocking_escalation, fatal: true }
     V20: { check: project_wip_cap, fatal: true }
     V21: { check: project_focus, fatal: true }
+    V22: { check: writers_room_config_valid, fatal: true }
 
 contracts:
   - name: dispatch_mode_native_dispatch
@@ -417,3 +419,26 @@ contracts:
     evidence_sources:
       - kind: instruction_contract
         agent: guild_of_the_torre_degli_angeli
+
+# ─────────────────────────────────────────────────────────
+# WRITERS-ROOM CONTRACTS (Creative type)
+# ─────────────────────────────────────────────────────────
+#
+# The writers-room pipeline operates on pontius_scene_items,
+# not work_items. Its contracts are defined in:
+#   pontius/writers-room/PONTIUS_LAB_CONTRACTS.yaml
+#
+# Three agents: Historical Prosecutor (Step 1),
+# Canon Steward (Steps 2-4), Dramatic Architect (Steps 5-7).
+#
+# When Type=Creative Work Items dispatch into the writers-room,
+# the Lab Dispatcher creates a row in pontius_scene_items and
+# stamps the entry signal. The Scene Item's Human Review
+# Requested At is the exit — handle_final_return reads it
+# back to the parent Work Item.
+#
+# V22 (writers_room_config_valid) applies only when
+# execution_lane == "writers-room". Skips V17 (repo_ready).
+#
+# See: cli/contracts/pontius_scene_items.schema.json
+# See: cli/contracts/writers_room_step_output.schema.json

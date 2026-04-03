@@ -297,6 +297,7 @@ def _extract_crdt_title_state(block: dict) -> dict[str, Any] | None:
             "plain_text": "",
             "start_id": None,
             "length": 0,
+            "runs": [],
         }
 
     items = root_state.get("i") or []

@@ -71,7 +71,8 @@ VALIDATION_GATES = _POLICY.get("validation_gates", {})
 def _text(props: dict, key: str) -> str:
     """Extract plain text from a rich_text property."""
     return "".join(
-        t.get("plain_text", "") for t in (props.get(key, {}) or {}).get("rich_text", [])
+        (t.get("plain_text") or t.get("text", {}).get("content") or "")
+        for t in (props.get(key, {}) or {}).get("rich_text", [])
     ).strip()
 
 
@@ -104,6 +105,10 @@ def _checkbox(props: dict, key: str) -> bool:
 
 def _number(props: dict, key: str) -> int | float | None:
     return (props.get(key, {}) or {}).get("number")
+
+
+def _multi_select(props: dict, key: str) -> list[str]:
+    return [o["name"] for o in (props.get(key, {}) or {}).get("multi_select", []) if o.get("name")]
 
 
 def _relation_ids(props: dict, key: str) -> list[str]:
@@ -549,7 +554,7 @@ def build_dispatch_packet(
     if queue_state["dispatch_block"] in BLOCKING_DISPATCH_BLOCKS:
         errors.append(f"V16: dispatch_block '{queue_state['dispatch_block']}' blocks dispatch")
 
-    if not queue_state["repo_ready"]:
+    if execution_lane != "writers-room" and not queue_state["repo_ready"]:
         errors.append("V17: repo execution is not ready (set Repo Ready or attach a project GitHub URL)")
 
     if queue_state["blocked_reason"]:
@@ -567,6 +572,31 @@ def build_dispatch_packet(
     _, focus_active = _ready_dispatch_candidates(client)
     if focus_active and not queue_state["project_focus"]:
         errors.append("V21: project is outside the current focus candidate set")
+
+    # V22: writers-room config validation (only for writers-room lane)
+    if execution_lane == "writers-room":
+        _WR_TASK_TYPES = {
+            "Full Scene Draft", "Scene Revision", "Beat Sheet Only",
+            "Research Query", "Character Development", "Episode Outline",
+            "Dialogue Polish", "Motif Placement",
+        }
+        _WR_STEP3_TYPES = {"Full Scene Draft", "Character Development", "Episode Outline"}
+        _WR_REVISION_TYPES = {"Scene Revision"}
+
+        wr_task_type = _select(props, "WR Task Type") or _select(props, "Task Type")
+        wr_brief = _text(props, "Creative Brief") or objective
+        wr_chars = _multi_select(props, "Character List")
+
+        if not wr_task_type:
+            errors.append("V22: writers-room dispatch requires a Task Type (WR Task Type or Task Type property)")
+        elif wr_task_type not in _WR_TASK_TYPES:
+            errors.append(f"V22: Task Type '{wr_task_type}' is not a valid writers-room task type")
+
+        if not wr_brief:
+            errors.append("V22: writers-room dispatch requires a Creative Brief (or non-empty Objective)")
+
+        if wr_task_type in _WR_STEP3_TYPES and not wr_chars:
+            errors.append(f"V22: Task Type '{wr_task_type}' requires a non-empty Character List (includes Step 3)")
 
     if errors and queue_state["derived_block_reason"] and queue_state["blocked_reason"] != queue_state["derived_block_reason"]:
         try:
@@ -634,15 +664,43 @@ def build_dispatch_packet(
         },
     }
 
+    # Attach writers-room config when dispatching to the writers-room lane
+    if execution_lane == "writers-room":
+        wr_task_type = _select(props, "WR Task Type") or _select(props, "Task Type")
+        wr_season = _number(props, "Season")
+        wr_episode = _number(props, "Episode")
+        wr_revision = _number(props, "Revision Pass")
+        packet["writers_room_config"] = {
+            "task_type": wr_task_type,
+            "scene_name": item_name,
+            "season": int(wr_season) if wr_season is not None else None,
+            "episode": int(wr_episode) if wr_episode is not None else None,
+            "revision_pass": int(wr_revision) if wr_revision is not None else 1,
+            "creative_brief": _text(props, "Creative Brief") or objective,
+            "character_list": _multi_select(props, "Character List"),
+            "scene_item_id": None,  # populated by dispatcher when Scene Item is created
+            "prior_artifacts": None,
+        }
+
     return {"packet": packet, "errors": [], "_production_audit": production_audit}
 
 
-def stamp_dispatch_consumed(
+def _dispatch_ready_status(props: dict[str, Any]) -> str:
+    """Best-effort status to restore when dispatch never truly started."""
+    current_status = _status(props)
+    if current_status in {"Not Started", "Prompt Drafted"}:
+        return current_status
+    if _date_start(props, "Prompt Request Consumed At") or _text(props, "Prompt Drafts"):
+        return "Prompt Drafted"
+    return "Not Started"
+
+
+def accept_dispatch_start(
     work_item_id: str,
     run_id: str,
     client: notion_api.NotionAPIClient | None = None,
 ) -> dict[str, Any]:
-    """Mark a Work Item as consumed: set timestamp, status, and run_id.
+    """Mark a Work Item as accepted for execution after runtime preflight.
 
     Returns the updated page properties on success.
     Raises ValueError if the item has already been consumed (race guard).
@@ -658,6 +716,13 @@ def stamp_dispatch_consumed(
         current_status = _status(props)
         if consumed_at:
             existing_run_id = _text(props, "run_id")
+            if existing_run_id == run_id:
+                return {
+                    "status": "already_accepted",
+                    "work_item_id": work_item_id,
+                    "run_id": existing_run_id,
+                    "consumed_at": consumed_at,
+                }
             return {
                 "status": "already_consumed",
                 "work_item_id": work_item_id,
@@ -688,10 +753,11 @@ def stamp_dispatch_consumed(
 
     # Create audit log entry
     try:
+        prior_status = current_status or _dispatch_ready_status(current.get("properties", {}))
         client.create_page(
             parent={"database_id": cfg.audit_log_db_id},
             properties={
-                "Transition": {"title": [{"type": "text", "text": {"content": "NotStarted\u2192InProgress"}}]},
+                "Transition": {"title": [{"type": "text", "text": {"content": f"{prior_status.replace(' ', '')}\u2192InProgress"}}]},
                 "Work Item": {"relation": [{"id": work_item_id}]},
                 "Agent": {"select": {"name": "Dispatch Adapter"}},
                 "Consumption Timestamp": {"date": {"start": now}},
@@ -702,6 +768,81 @@ def stamp_dispatch_consumed(
         pass
 
     return {"status": "consumed", "work_item_id": work_item_id, "run_id": run_id, "consumed_at": now}
+
+
+def stamp_dispatch_consumed(
+    work_item_id: str,
+    run_id: str,
+    client: notion_api.NotionAPIClient | None = None,
+) -> dict[str, Any]:
+    """Backward-compatible alias for accept_dispatch_start()."""
+    return accept_dispatch_start(work_item_id, run_id, client)
+
+
+def fail_dispatch_preflight(
+    work_item_id: str,
+    run_id: str,
+    reason: str,
+    client: notion_api.NotionAPIClient | None = None,
+) -> dict[str, Any]:
+    """Record a dispatch preflight failure without leaving false In Progress state."""
+    if client is None:
+        client = notion_api.NotionAPIClient(get_config().notion_token)
+
+    cfg = get_config()
+    now = notion_api.now_iso()
+    current = client.retrieve_page(work_item_id)
+    props = current.get("properties", {})
+    consumed_at = _date_start(props, "Dispatch Requested Consumed At")
+    current_status = _status(props)
+    existing_run_id = _text(props, "run_id")
+    reset_status = _dispatch_ready_status(props)
+
+    properties: dict[str, Any] = {
+        "Blocked Reason": _rich_text_property(reason),
+    }
+    reverted = False
+    if consumed_at and existing_run_id == run_id:
+        properties.update({
+            "Dispatch Requested Consumed At": {"date": None},
+            "run_id": {"rich_text": []},
+            "Status": {"status": {"name": reset_status}},
+        })
+        reverted = True
+    elif current_status in (None, "Not Started", "Prompt Drafted"):
+        properties["Status"] = {"status": {"name": reset_status}}
+    elif consumed_at and existing_run_id and existing_run_id != run_id:
+        return {
+            "status": "conflict",
+            "work_item_id": work_item_id,
+            "run_id": existing_run_id,
+            "consumed_at": consumed_at,
+            "reason": reason,
+        }
+
+    client.update_page(work_item_id, properties)
+
+    try:
+        client.create_page(
+            parent={"database_id": cfg.audit_log_db_id},
+            properties={
+                "Transition": {"title": [{"type": "text", "text": {"content": "DispatchRequested\u2192Blocked"}}]},
+                "Work Item": {"relation": [{"id": work_item_id}]},
+                "Agent": {"select": {"name": "Dispatch Adapter"}},
+                "Consumption Timestamp": {"date": {"start": now}},
+            },
+        )
+    except Exception:
+        pass
+
+    return {
+        "status": "reverted" if reverted else "recorded",
+        "work_item_id": work_item_id,
+        "run_id": run_id,
+        "reason": reason,
+        "recorded_at": now,
+        "restored_status": reset_status,
+    }
 
 
 # ── Return ingestion ─────────────────────────────────────────────────────────
@@ -868,8 +1009,8 @@ def handle_final_return(
                 "rich_text": [{"type": "text", "text": {"content": json.dumps(metrics, indent=2)[:2000]}}]
             }
 
-        # Signal Librarian
-        update_props["Librarian Request Received At"] = {"date": {"start": now}}
+        # Intake Clerk is triggered by Return Received At and owns the
+        # Librarian request signal once ingestion actually happens.
     else:
         # Error/gated/timeout: set Blocked but still record Return Received At
         # so Intake Clerk trigger fires for triage
@@ -978,4 +1119,97 @@ def handle_final_return(
         "status": status,
         "verdict": verdict,
         "mapped_status": to_status,
+    }
+
+
+# ── Writers-Room Scene Dispatch ──────────────────────────────────────────────
+
+# Routing table: task_type -> which entry signal to stamp
+_WR_ENTRY_SIGNALS = {
+    "Full Scene Draft": "Source Grounding Requested At",
+    "Scene Revision": "Scene Revision Requested At",
+    "Beat Sheet Only": "Source Grounding Requested At",
+    "Research Query": "Source Grounding Requested At",
+    "Character Development": "Canon Review Requested At",
+    "Episode Outline": "Source Grounding Requested At",
+    "Dialogue Polish": "Dramatic Architecture Requested At",
+    "Motif Placement": "Canon Review Requested At",
+}
+
+
+def dispatch_scene(
+    scene_name: str,
+    season: int,
+    task_type: str,
+    creative_brief: str,
+    character_list: list[str] | None = None,
+    episode: int | None = None,
+    prompt_notes: str | None = None,
+    work_item_id: str | None = None,
+    client: notion_api.NotionAPIClient | None = None,
+) -> dict[str, Any]:
+    """Create a Scene Item in pontius_scene_items and stamp the entry signal.
+
+    This is the runtime entry point for the writers-room pipeline. It creates
+    a row in the Scene Items database and sets the appropriate *_Requested_At
+    timestamp to fire the first agent in the chain.
+
+    Returns {"created": True, "scene_item_id": "...", "entry_signal": "..."}
+    or {"created": False, "errors": [...]}.
+    """
+    from config import get_config
+
+    if client is None:
+        client = notion_api.NotionAPIClient(get_config().notion_token)
+
+    cfg = get_config()
+    db_id = cfg.scene_items_db_id
+    if not db_id:
+        return {"created": False, "errors": ["SCENE_ITEMS_DB_ID not configured"]}
+
+    if task_type not in _WR_ENTRY_SIGNALS:
+        return {"created": False, "errors": [f"Unknown task_type: {task_type}"]}
+
+    entry_signal = _WR_ENTRY_SIGNALS[task_type]
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Build Notion page properties
+    properties: dict[str, Any] = {
+        "Scene Name": {"title": [{"type": "text", "text": {"content": scene_name}}]},
+        "Season": {"number": season},
+        "Task Type": {"select": {"name": task_type}},
+        "Creative Brief": {"rich_text": [{"type": "text", "text": {"content": creative_brief[:2000]}}]},
+        "Pipeline Status": {"status": {"name": "Not Started"}},
+        "Escalation Level": {"select": {"name": "Normal"}},
+        "Revision Pass": {"number": 1},
+        entry_signal: {"date": {"start": now}},
+    }
+
+    if episode is not None:
+        properties["Episode"] = {"number": episode}
+
+    if character_list:
+        properties["Character List"] = {"multi_select": [{"name": c} for c in character_list]}
+
+    if prompt_notes:
+        properties["Prompt Notes"] = {"rich_text": [{"type": "text", "text": {"content": prompt_notes[:2000]}}]}
+
+    if work_item_id:
+        properties["Work Item"] = {"relation": [{"id": work_item_id}]}
+
+    try:
+        page = client.create_page(
+            parent={"database_id": db_id},
+            properties=properties,
+        )
+    except Exception as e:
+        return {"created": False, "errors": [f"Notion API error: {e}"]}
+
+    return {
+        "created": True,
+        "scene_item_id": page["id"],
+        "scene_name": scene_name,
+        "task_type": task_type,
+        "entry_signal": entry_signal,
+        "stamped_at": now,
     }

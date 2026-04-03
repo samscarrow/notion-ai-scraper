@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """dispatch_poller.py — Mechanical dispatch poller.
 
-Queries the Lab for dispatchable work items, validates them, stamps them
-as consumed, and submits dispatch packets to OpenClaw for execution.
+Queries the Lab for dispatchable work items, validates them, and submits
+dispatch packets to OpenClaw for execution.
 
 No LLM in the loop. Runs as a systemd timer or cron on nix.
 
@@ -25,7 +25,7 @@ import uuid
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import notion_api
 from config import get_config
-from dispatch import get_dispatchable_items, build_dispatch_packet, stamp_dispatch_consumed
+from dispatch import get_dispatchable_items, build_dispatch_packet
 
 logging.basicConfig(
     level=logging.INFO,
@@ -123,23 +123,42 @@ def poll_and_dispatch(max_items: int = 5, dry_run: bool = False) -> int:
 
         run_id = packet.get("run_id", str(uuid.uuid4()))
 
-        # Stamp consumed BEFORE submitting (idempotency — prevents double dispatch)
-        if not dry_run:
-            stamp_result = stamp_dispatch_consumed(item_id, run_id, client)
-            if stamp_result.get("status") == "already_consumed":
-                log.info("  Already consumed, skipping: %s", item_name)
-                continue
-            if stamp_result.get("status") == "wrong_status":
-                log.info("  Wrong status (%s), skipping: %s",
-                         stamp_result.get("current_status"), item_name)
+        # Route by lane: writers-room goes to Notion triggers, everything else to OpenClaw
+        lane = packet.get("execution_lane", "")
+        if lane == "writers-room":
+            if dry_run:
+                log.info("  [DRY RUN] Would create Scene Item for %s", item_name)
+                dispatched += 1
                 continue
 
-        # Submit to OpenClaw
-        if submit_to_openclaw(packet, dry_run=dry_run):
+            wr_cfg = packet.get("writers_room_config", {})
+            if not wr_cfg:
+                log.error("  writers-room packet missing writers_room_config for %s", item_name)
+                continue
+
+            wr_result = dispatch.dispatch_scene(
+                scene_name=wr_cfg.get("scene_name", item_name),
+                season=wr_cfg.get("season", 1),
+                task_type=wr_cfg.get("task_type", "Full Scene Draft"),
+                creative_brief=wr_cfg.get("creative_brief", ""),
+                character_list=wr_cfg.get("character_list"),
+                episode=wr_cfg.get("episode"),
+                work_item_id=item_id,
+                client=client,
+            )
+            if wr_result.get("created"):
+                log.info("  Scene Item created: %s (signal=%s)",
+                         wr_result["scene_item_id"], wr_result["entry_signal"])
+                # Stamp consumed on the parent Work Item so it doesn't re-dispatch
+                dispatch.accept_dispatch_start(item_id, run_id, client)
+                dispatched += 1
+            else:
+                log.error("  Scene Item creation failed for %s: %s",
+                          item_name, wr_result.get("errors"))
+        elif submit_to_openclaw(packet, dry_run=dry_run):
             dispatched += 1
         else:
-            log.error("  Submission failed for %s — item is stamped consumed with run_id=%s but execution may not have started",
-                      item_name, run_id)
+            log.error("  Submission failed for %s (run_id=%s)", item_name, run_id)
 
     log.info("Done: %d/%d dispatched", dispatched, len(candidates[:max_items]))
     return dispatched

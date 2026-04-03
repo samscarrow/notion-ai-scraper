@@ -28,7 +28,7 @@
         "main", "planner", "coder", "reviewer", "dev",
         "sentinel", "sentinel-deploy", "scout",
         "bayview", "bayview-thinking", "bayview-tuning",
-        "thinker", "ops"
+        "thinker", "ops", "writers-room"
       ]
     },
     "environment": {
@@ -38,7 +38,7 @@
     "branch":          {"type": ["string", "null"]},
     "type": {
       "type": "string",
-      "enum": ["Gauntlet", "Measurement Track", "Literature Survey", "Design Spec", "Feasibility Analysis", "Implementation", "Operational", "Review", "Experiment", "Fact-Check", "Other"]
+      "enum": ["Gauntlet", "Measurement Track", "Literature Survey", "Design Spec", "Feasibility Analysis", "Implementation", "Operational", "Review", "Experiment", "Fact-Check", "Creative", "Other"]
     },
     "prompt_notes":    {"type": ["string", "null"]},
     "repo_url": {"type": ["string", "null"], "format": "uri"},
@@ -83,6 +83,37 @@
         "max_timeout_s": {"type": "integer", "minimum": 1}
       },
       "additionalProperties": false
+    },
+    "writers_room_config": {
+      "type": ["object", "null"],
+      "description": "Writers-room pipeline configuration. Required when execution_lane is 'writers-room'. See pontius_scene_items.schema.json for field definitions.",
+      "required": ["task_type", "scene_name", "creative_brief"],
+      "properties": {
+        "task_type": {
+          "type": "string",
+          "enum": ["Full Scene Draft", "Scene Revision", "Beat Sheet Only", "Research Query", "Character Development", "Episode Outline", "Dialogue Polish", "Motif Placement"]
+        },
+        "scene_name":     {"type": "string", "minLength": 1},
+        "season":         {"type": ["integer", "null"], "minimum": 1, "maximum": 4},
+        "episode":        {"type": ["integer", "null"], "minimum": 1},
+        "revision_pass":  {"type": "integer", "minimum": 1, "default": 1},
+        "creative_brief": {"type": "string", "minLength": 1},
+        "character_list": {"type": "array", "items": {"type": "string"}},
+        "scene_item_id":  {"type": ["string", "null"], "format": "uuid", "description": "Notion page ID of the pontius_scene_items row. Null if the dispatcher should create one."},
+        "prior_artifacts": {
+          "type": ["object", "null"],
+          "description": "Notion page IDs of step outputs from a previous pass, carried forward on revision.",
+          "properties": {
+            "source_audit_id":        {"type": ["string", "null"]},
+            "classification_id":      {"type": ["string", "null"]},
+            "character_clearance_id": {"type": ["string", "null"]},
+            "motif_audit_id":         {"type": ["string", "null"]},
+            "beat_sheet_id":          {"type": ["string", "null"]},
+            "scene_draft_id":         {"type": ["string", "null"]},
+            "stress_test_id":         {"type": ["string", "null"]}
+          }
+        }
+      }
     }
   },
   "additionalProperties": false

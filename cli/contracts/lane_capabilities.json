@@ -13,7 +13,8 @@
     "bayview-thinking":  {"can_code": false, "can_browse": true,  "can_deploy": false, "write_scope": "none",           "max_timeout_s": 600},
     "bayview-tuning":    {"can_code": false, "can_browse": false, "can_deploy": false, "write_scope": "config",         "max_timeout_s": 300},
     "thinker":           {"can_code": false, "can_browse": true,  "can_deploy": false, "write_scope": "memory",         "max_timeout_s": 900},
-    "ops":               {"can_code": true,  "can_browse": false, "can_deploy": true,  "write_scope": "alerts_logs",    "max_timeout_s": 300}
+    "ops":               {"can_code": true,  "can_browse": false, "can_deploy": true,  "write_scope": "alerts_logs",    "max_timeout_s": 300},
+    "writers-room":      {"can_code": false, "can_browse": true,  "can_deploy": false, "write_scope": "creative_artifacts", "max_timeout_s": 1800}
   },
   "dispatch_via_defaults": {
     "Claude":       "dev",

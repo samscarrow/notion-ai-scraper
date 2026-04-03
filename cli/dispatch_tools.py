@@ -99,7 +99,7 @@ def register(mcp, cfg):
     @mcp.tool()
     def stamp_dispatch_consumed(work_item_id: str, run_id: str) -> str:
         """
-        Mark a Work Item as consumed by an execution plane.
+        Mark a Work Item as accepted by an execution plane after preflight.
 
         Sets Dispatch Requested Consumed At=now(), Status=In Progress, and writes
         the run_id for idempotency tracking.
@@ -109,7 +109,7 @@ def register(mcp, cfg):
         run_id: The run_id from the dispatch packet (from build_dispatch_packet).
         """
         client = _get_notion_api_client()
-        result = dispatch.stamp_dispatch_consumed(work_item_id, run_id, client)
+        result = dispatch.accept_dispatch_start(work_item_id, run_id, client)
 
         if result.get("status") == "already_consumed":
             return (
@@ -117,6 +117,13 @@ def register(mcp, cfg):
                 f"- Work Item: `{result['work_item_id']}`\n"
                 f"- Existing Run ID: `{result['run_id']}`\n"
                 f"- Consumed At: `{result['consumed_at']}`"
+            )
+        if result.get("status") == "already_accepted":
+            return (
+                f"**Already accepted**.\n\n"
+                f"- Work Item: `{result['work_item_id']}`\n"
+                f"- Run ID: `{result['run_id']}`\n"
+                f"- Accepted At: `{result['consumed_at']}`"
             )
         if result.get("status") == "wrong_status":
             return (
@@ -131,6 +138,35 @@ def register(mcp, cfg):
             f"- Run ID: `{result['run_id']}`\n"
             f"- Consumed At: `{result['consumed_at']}`\n"
             f"- Status: In Progress"
+        )
+
+    @mcp.tool()
+    def fail_dispatch_preflight(work_item_id: str, run_id: str, reason: str) -> str:
+        """
+        Record a dispatch preflight failure without leaving false In Progress state.
+
+        Writes `Blocked Reason`. If the same `run_id` had already been accepted,
+        clears `Dispatch Requested Consumed At`, clears `run_id`, and restores the
+        item to `Not Started` or `Prompt Drafted`.
+        """
+        client = _get_notion_api_client()
+        result = dispatch.fail_dispatch_preflight(work_item_id, run_id, reason, client)
+
+        if result.get("status") == "conflict":
+            return (
+                f"**Cannot revert dispatch** — Work Item is already owned by another run.\n\n"
+                f"- Work Item: `{result['work_item_id']}`\n"
+                f"- Existing Run ID: `{result['run_id']}`\n"
+                f"- Consumed At: `{result['consumed_at']}`"
+            )
+
+        return (
+            f"**Dispatch preflight failure recorded.**\n\n"
+            f"- Work Item: `{result['work_item_id']}`\n"
+            f"- Run ID: `{result['run_id']}`\n"
+            f"- Recorded At: `{result['recorded_at']}`\n"
+            f"- Restored Status: `{result['restored_status']}`\n"
+            f"- Reason: {result['reason']}"
         )
 
     @mcp.tool()
@@ -177,43 +213,62 @@ def register(mcp, cfg):
         commit_sha: Optional git commit SHA.
         pr_url: Optional pull request URL.
         """
+    @mcp.tool()
+    def dispatch_scene(
+        scene_name: str,
+        season: int,
+        task_type: str,
+        creative_brief: str,
+        character_list: str = "",
+        episode: int = 0,
+        prompt_notes: str = "",
+        work_item_id: str = "",
+    ) -> str:
+        """
+        Create a Scene Item in the writers-room pipeline and fire the entry signal.
+
+        Creates a row in pontius_scene_items and stamps the appropriate
+        *_Requested_At timestamp to trigger the first agent in the chain
+        (Historical Prosecutor, Canon Steward, or Dramatic Architect depending
+        on the task_type routing table).
+
+        scene_name: Title of the scene (e.g. "The Petition Hour").
+        season: Season number (1-4).
+        task_type: One of: Full Scene Draft, Scene Revision, Beat Sheet Only,
+                   Research Query, Character Development, Episode Outline,
+                   Dialogue Polish, Motif Placement.
+        creative_brief: The assignment — what the scene needs to do.
+        character_list: Comma-separated character names (required for Full Scene
+                        Draft, Character Development, Episode Outline).
+        episode: Episode number (0 to omit).
+        prompt_notes: Optional human guidance or constraints.
+        work_item_id: Optional parent Work Item UUID (for Lab-dispatched scenes).
+        """
         client = _get_notion_api_client()
+        chars = [c.strip() for c in character_list.split(",") if c.strip()] if character_list else None
 
-        # Parse optional JSON fields
-        parsed_metrics = json.loads(metrics) if metrics else None
-        parsed_artifacts = json.loads(artifacts) if artifacts else None
-        parsed_files = [f.strip() for f in files_changed.split(",") if f.strip()] if files_changed else None
-
-        result = dispatch.handle_final_return(
-            work_item_id=work_item_id,
-            run_id=run_id,
-            status=status,
-            summary=summary,
-            raw_output=raw_output,
-            duration_ms=int(duration_ms),
-            model=model,
-            lane=lane,
-            verdict=verdict or None,
-            error=error or None,
-            metrics=parsed_metrics,
-            artifacts=parsed_artifacts,
-            files_changed=parsed_files,
-            commit_sha=commit_sha or None,
-            pr_url=pr_url or None,
+        result = dispatch.dispatch_scene(
+            scene_name=scene_name,
+            season=season,
+            task_type=task_type,
+            creative_brief=creative_brief,
+            character_list=chars,
+            episode=episode if episode else None,
+            prompt_notes=prompt_notes or None,
+            work_item_id=work_item_id or None,
             client=client,
         )
 
-        if not result.get("ingested"):
-            if result.get("errors"):
-                error_list = "\n".join(f"- {e}" for e in result["errors"])
-                return f"**Return rejected** ({len(result['errors'])} error(s)):\n\n{error_list}"
-            return f"**Return rejected:** {result.get('reason', 'unknown')} (run_id: {result.get('run_id', '?')})"
+        if not result.get("created"):
+            error_list = "\n".join(f"- {e}" for e in result.get("errors", []))
+            return f"**Scene dispatch failed:**\n\n{error_list}"
 
         return (
-            f"**Return ingested.**\n\n"
-            f"- Work Item: `{result['work_item_id']}` ({result['item_name']})\n"
-            f"- Run ID: `{result['run_id']}`\n"
-            f"- Status: {result['status']} → Notion Status: {result['mapped_status']}\n"
-            f"- Verdict: {result.get('verdict') or 'N/A'}\n"
-            f"- Intake Clerk trigger: fired (Return Received At set)"
+            f"**Scene Item created.**\n\n"
+            f"- Scene: {result['scene_name']}\n"
+            f"- ID: `{result['scene_item_id']}`\n"
+            f"- Task Type: {result['task_type']}\n"
+            f"- Entry Signal: `{result['entry_signal']}` stamped at {result['stamped_at']}\n"
+            f"- Pipeline will fire automatically via Notion triggers."
         )
+

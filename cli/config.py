@@ -18,6 +18,7 @@ DEFAULT_AUDIT_LOG_DB_ID = ""
 DEFAULT_LAB_CONTROL_DB_ID = ""
 DEFAULT_CHATSEARCH_PROJECT_ID = ""
 DEFAULT_EVIDENCE_DOSSIER_DB_ID = ""
+DEFAULT_SCENE_ITEMS_DB_ID = ""
 DEFAULT_LIBRARIAN_WORKFLOW_ID = ""
 DEFAULT_LIBRARIAN_BOT_RUNTIME = ""
 DEFAULT_LIBRARIAN_BOT_DRAFT = ""
@@ -33,6 +34,7 @@ class Config:
     lab_control_db_id: str = ""
     chatsearch_project_id: str = ""
     evidence_dossier_db_id: str = ""
+    scene_items_db_id: str = ""
     librarian_notion_internal_id: str = ""
     librarian_bot_runtime: str = ""
     librarian_bot_draft: str = ""
@@ -79,6 +81,7 @@ class Config:
             lab_control_db_id=os.environ.get("LAB_CONTROL_DB_ID", get_db_id("lab_control", DEFAULT_LAB_CONTROL_DB_ID)),
             chatsearch_project_id=os.environ.get("CHATSEARCH_PROJECT_ID", DEFAULT_CHATSEARCH_PROJECT_ID),
             evidence_dossier_db_id=os.environ.get("EVIDENCE_DOSSIER_DB_ID", get_db_id("evidence_dossier", DEFAULT_EVIDENCE_DOSSIER_DB_ID)),
+            scene_items_db_id=os.environ.get("SCENE_ITEMS_DB_ID", get_db_id("pontius_scene_items", DEFAULT_SCENE_ITEMS_DB_ID)),
             librarian_notion_internal_id=os.environ.get("LIBRARIAN_WORKFLOW_ID", get_agent_id("lab_librarian_knowledge_synthesis", "notion_internal_id", DEFAULT_LIBRARIAN_WORKFLOW_ID)),
             librarian_bot_runtime=os.environ.get("LIBRARIAN_BOT_RUNTIME", get_agent_id("lab_librarian_knowledge_synthesis", "notion_internal_id", DEFAULT_LIBRARIAN_BOT_RUNTIME)),
             librarian_bot_draft=os.environ.get("LIBRARIAN_BOT_DRAFT", DEFAULT_LIBRARIAN_BOT_DRAFT),

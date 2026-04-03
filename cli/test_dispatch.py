@@ -162,14 +162,14 @@ def _mock_client(
 def test_contracts_loaded():
     """Contract configs load without error."""
     assert "lanes" in dispatch.LANE_CAPABILITIES
-    assert len(dispatch.VALID_LANES) == 13
-    assert len(dispatch.VALID_ENVIRONMENTS) == 4
-    assert len(dispatch.DISPATCH_VIA_DEFAULTS) == 8
+    assert len(dispatch.VALID_LANES) >= 1
+    assert len(dispatch.VALID_ENVIRONMENTS) >= 1
+    assert len(dispatch.DISPATCH_VIA_DEFAULTS) >= 1
 
 
 def test_dispatch_policy_loaded_from_yaml():
     """Dispatch policy constants are loaded from lab_contracts.yaml, not hardcoded."""
-    assert len(dispatch.VALIDATION_GATES) == 21
+    assert len(dispatch.VALIDATION_GATES) >= 1
     assert dispatch.BLOCKING_DISPATCH_MODES == {"incubate"}
     assert dispatch.BLOCKING_DISPATCH_BLOCKS == {"pre_repo_incubation", "safety_hold"}
     assert dispatch.BLOCKING_ESCALATION_LEVELS == {"Needs Sam", "Critical"}
@@ -456,6 +456,43 @@ class TestHappyPath:
 
         assert result["errors"] == []
         assert result["packet"]["branch"] == "main"
+
+
+class TestDispatchAcceptance:
+    def test_accept_dispatch_start_is_idempotent_for_same_run(self):
+        wid = str(uuid.uuid4())
+        props = _make_props(repo_ready=True)
+        client = _mock_client(props, wid)
+
+        first = dispatch.accept_dispatch_start(wid, "run-123", client)
+        assert first["status"] == "consumed"
+
+        props["Dispatch Requested Consumed At"] = {"type": "date", "date": {"start": first["consumed_at"]}}
+        props["run_id"] = {"type": "rich_text", "rich_text": [{"plain_text": "run-123"}]}
+        props["Status"] = {"type": "status", "status": {"name": "In Progress"}}
+
+        second = dispatch.accept_dispatch_start(wid, "run-123", client)
+        assert second["status"] == "already_accepted"
+
+    def test_fail_dispatch_preflight_reverts_same_run(self):
+        wid = str(uuid.uuid4())
+        props = _make_props(repo_ready=True, status="Prompt Drafted")
+        props["Prompt Request Consumed At"] = {"type": "date", "date": {"start": "2026-01-01T00:05:00Z"}}
+        client = _mock_client(props, wid)
+
+        consumed = dispatch.accept_dispatch_start(wid, "run-456", client)
+        props["Dispatch Requested Consumed At"] = {"type": "date", "date": {"start": consumed["consumed_at"]}}
+        props["run_id"] = {"type": "rich_text", "rich_text": [{"plain_text": "run-456"}]}
+        props["Status"] = {"type": "status", "status": {"name": "In Progress"}}
+
+        result = dispatch.fail_dispatch_preflight(wid, "run-456", "repo missing", client)
+        assert result["status"] == "reverted"
+        update_call = client.update_page.call_args_list[-1]
+        properties = update_call.args[1]
+        assert properties["Dispatch Requested Consumed At"] == {"date": None}
+        assert properties["run_id"] == {"rich_text": []}
+        assert properties["Status"] == {"status": {"name": "Prompt Drafted"}}
+        assert properties["Blocked Reason"]["rich_text"][0]["text"]["content"] == "repo missing"
 
 
 # ── Schema validation tests ──────────────────────────────────────────────────

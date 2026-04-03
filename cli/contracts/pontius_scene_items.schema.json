@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pontius_scene_items.schema.json",
+  "title": "Pontius Scene Items",
+  "description": "Database schema for the pontius_scene_items Notion database. Each row is a scene-level work unit flowing through the 3-agent writers-room pipeline (Historical Prosecutor -> Canon Steward -> Dramatic Architect). Contracts defined in pontius/writers-room/PONTIUS_LAB_CONTRACTS.yaml.",
+  "type": "object",
+  "required": ["scene_name", "season", "task_type", "creative_brief"],
+  "properties": {
+
+    "_comment_signals": "Timestamp fields that trigger agents. Consume-first idempotency: agent sets *_Consumed_At FIRST, then does work, then stamps next *_Requested_At.",
+
+    "source_grounding_requested_at": {
+      "type": ["string", "null"], "format": "date-time",
+      "description": "Entry signal. Set by human or Lab dispatcher. Triggers Historical Prosecutor."
+    },
+    "source_grounding_consumed_at": {
+      "type": ["string", "null"], "format": "date-time",
+      "description": "Idempotency gate. Set by Historical Prosecutor as FIRST write."
+    },
+    "canon_review_requested_at": {
+      "type": ["string", "null"], "format": "date-time",
+      "description": "Set by Historical Prosecutor on completion. Triggers Canon Steward."
+    },
+    "canon_review_consumed_at": {
+      "type": ["string", "null"], "format": "date-time",
+      "description": "Idempotency gate. Set by Canon Steward as FIRST write."
+    },
+    "dramatic_architecture_requested_at": {
+      "type": ["string", "null"], "format": "date-time",
+      "description": "Set by Canon Steward when all clearances pass (no escalation). Triggers Dramatic Architect."
+    },
+    "dramatic_architecture_consumed_at": {
+      "type": ["string", "null"], "format": "date-time",
+      "description": "Idempotency gate. Set by Dramatic Architect as FIRST write."
+    },
+    "human_review_requested_at": {
+      "type": ["string", "null"], "format": "date-time",
+      "description": "Exit signal. Set by Dramatic Architect on completion. Universal — every pipeline run ends here."
+    },
+    "scene_revision_requested_at": {
+      "type": ["string", "null"], "format": "date-time",
+      "description": "Revision re-entry signal. Set by human after review. Triggers Canon Steward (Contract 4)."
+    },
+    "scene_revision_consumed_at": {
+      "type": ["string", "null"], "format": "date-time",
+      "description": "Idempotency gate for revision path. Set by Canon Steward as FIRST write."
+    },
+
+    "_comment_inputs": "Fields set before dispatch. These are the writers-room inputs.",
+
+    "scene_name": {
+      "type": "string", "minLength": 1,
+      "description": "Title property. e.g. 'The Petition Hour'"
+    },
+    "season": {
+      "type": "integer", "minimum": 1, "maximum": 4,
+      "description": "Season number (1-4)."
+    },
+    "episode": {
+      "type": ["integer", "null"], "minimum": 1,
+      "description": "Episode number. Null for standalone tasks (research queries, character development)."
+    },
+    "task_type": {
+      "type": "string",
+      "enum": [
+        "Full Scene Draft",
+        "Scene Revision",
+        "Beat Sheet Only",
+        "Research Query",
+        "Character Development",
+        "Episode Outline",
+        "Dialogue Polish",
+        "Motif Placement"
+      ],
+      "description": "Determines which agents fire and which steps execute. See routing table in WORKFLOW.md."
+    },
+    "creative_brief": {
+      "type": "string", "minLength": 1,
+      "description": "The assignment — what the scene needs to do, dramatic purpose, constraints."
+    },
+    "character_list": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Characters present in the scene. Required for task types that include Step 3 (Full Scene Draft, Character Development, Episode Outline)."
+    },
+    "prompt_notes": {
+      "type": ["string", "null"],
+      "description": "Human guidance, escalation resolutions, revision direction. Appended across passes."
+    },
+    "revision_pass": {
+      "type": "integer", "minimum": 1, "default": 1,
+      "description": "Monotonically incrementing revision counter. Starts at 1, increments each time Scene Revision Requested At is stamped."
+    },
+    "work_item_id": {
+      "type": ["string", "null"], "format": "uuid",
+      "description": "Relation to parent Work Item (when dispatched via Lab Path 2). Null for human-initiated scenes."
+    },
+
+    "_comment_outputs": "Fields produced by agents during pipeline execution.",
+
+    "source_audit": {
+      "type": ["string", "null"],
+      "description": "Notion page ID of child page containing structured Source Audit (OUTPUT_SCHEMAS Schema 1). Produced by Historical Prosecutor."
+    },
+    "provenance_tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["Independent", "Pauline", "Lukan"]
+      },
+      "description": "Multi-select. Provenance categories present in the source audit."
+    },
+    "source_coverage_pct": {
+      "type": ["number", "null"], "minimum": 0, "maximum": 100,
+      "description": "Percentage of scene elements with primary source backing."
+    },
+    "source_gap_count": {
+      "type": ["integer", "null"], "minimum": 0,
+      "description": "Number of scene elements requiring invention (no source exists)."
+    },
+    "source_grounding_confidence": {
+      "type": ["string", "null"],
+      "enum": ["HIGH", "MEDIUM", "LOW", null],
+      "description": "Prosecutor's confidence in source coverage."
+    },
+    "scene_type_classification": {
+      "type": ["string", "null"],
+      "enum": [
+        "Political Inevitability",
+        "Transformation Chemistry",
+        "Governance Reality",
+        "Embodied Theology",
+        "Argument as Drama",
+        null
+      ],
+      "description": "Primary scene type per SCENE_PROTOCOLS.md. Produced by Canon Steward."
+    },
+    "governing_voice": {
+      "type": ["string", "null"],
+      "enum": ["Martin+Simon", "Gilligan", "Simon", "Flanagan", "Kushner", null],
+      "description": "Governing dramatic voice per CHARTER.md. Produced by Canon Steward."
+    },
+    "character_clearance": {
+      "type": ["string", "null"],
+      "description": "Notion page ID of child page containing structured Character Clearance (OUTPUT_SCHEMAS Schema 3). Produced by Canon Steward."
+    },
+    "motif_clearance": {
+      "type": ["string", "null"],
+      "description": "Notion page ID of child page containing structured Motif Audit (OUTPUT_SCHEMAS Schema 4). Produced by Canon Steward."
+    },
+    "escalation_flags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "remainder_resolution",
+          "new_motif_introduction",
+          "spine_placement",
+          "schema_activation",
+          "character_death",
+          "timeline_departure",
+          "new_recurring_character",
+          "premise_proximity"
+        ]
+      },
+      "description": "Multi-select. Escalation triggers detected by Steward (or Prosecutor/Architect). When non-empty, Steward does NOT stamp Dramatic Architecture Requested At."
+    },
+    "canon_review_confidence": {
+      "type": ["string", "null"],
+      "enum": ["HIGH", "MEDIUM", "LOW", null],
+      "description": "Steward's confidence in clearances."
+    },
+    "beat_sheet": {
+      "type": ["string", "null"],
+      "description": "Notion page ID of child page containing structured Beat Sheet (OUTPUT_SCHEMAS Schema 5). Produced by Dramatic Architect."
+    },
+    "scene_draft": {
+      "type": ["string", "null"],
+      "description": "Notion page ID of child page containing Scene Draft in screenplay format (OUTPUT_SCHEMAS Schema 6). Produced by Dramatic Architect."
+    },
+    "stress_test_results": {
+      "type": ["string", "null"],
+      "description": "Notion page ID of child page containing 10-question Stress Test (OUTPUT_SCHEMAS Schema 7). Produced by Dramatic Architect."
+    },
+    "stress_test_score": {
+      "type": ["integer", "null"], "minimum": 0, "maximum": 10,
+      "description": "Number of stress test questions passed (0-10)."
+    },
+    "revision_required": {
+      "type": "boolean", "default": false,
+      "description": "Set by Dramatic Architect. True if stress test score < 10/10."
+    },
+    "draft_confidence": {
+      "type": ["string", "null"],
+      "enum": ["HIGH", "MEDIUM", "LOW", null],
+      "description": "Architect's confidence in register consistency."
+    },
+
+    "_comment_status": "Pipeline status and escalation state.",
+
+    "pipeline_status": {
+      "type": "string",
+      "enum": [
+        "Not Started",
+        "Source Grounding",
+        "Canon Review",
+        "Dramatic Architecture",
+        "Escalated",
+        "Human Review",
+        "Done"
+      ],
+      "default": "Not Started",
+      "description": "Status property. Tracks which phase the scene is in."
+    },
+    "escalation_level": {
+      "type": "string",
+      "enum": ["Normal", "Needs Sam", "Critical"],
+      "default": "Normal",
+      "description": "Severity of current escalation. Critical = character death or premise proximity."
+    },
+    "blocked_reason": {
+      "type": ["string", "null"],
+      "description": "Human-readable detail when escalated. Set by Steward."
+    }
+  },
+  "additionalProperties": false
+}
