@@ -68,6 +68,10 @@ from notion_threads import (
     send_agent_message,
     wait_for_agent_response,
     wait_for_agent_response_state,
+    get_snapshots_list,
+    get_snapshot_contents,
+    snapshot_contents_to_blocks_map,
+    restore_snapshot,
 )
 
 __all__ = [
@@ -92,4 +96,6 @@ __all__ = [
     "archive_threads", "archive_workflow_threads", "unarchive_threads",
     "unarchive_selected_workflow_threads", "create_workflow_thread",
     "send_agent_message", "wait_for_agent_response", "wait_for_agent_response_state",
+    "get_snapshots_list", "get_snapshot_contents", "snapshot_contents_to_blocks_map",
+    "restore_snapshot",
 ]

@@ -524,6 +524,92 @@ def dump_agent(agent_name: str) -> str:
 
 @mcp.tool()
 @auth_retry
+def list_agent_instruction_versions(agent_name: str, size: int = 50) -> str:
+    """
+    List historical snapshots (version history) for an agent's instruction block.
+
+    Returns a JSON string with one entry per snapshot: {timestamp, iso_time,
+    authors, snapshot_id}.  The timestamp field is the millisecond-epoch
+    string used by get_agent_instruction_version and
+    restore_agent_instruction_version as the snapshot key.
+
+    Use this to find a pre-wipe version to restore after an accidental
+    instruction wipe.  Notion keeps automatic snapshots; the Notion UI's
+    "Version history" entry exposes this same list.
+    """
+    from datetime import datetime, timezone
+    cfg = _get_agent_config(agent_name)
+    token, user_id = _get_auth()
+    snapshots = notion_client.get_snapshots_list(
+        cfg["notion_public_id"], cfg["space_id"], token, user_id, size=size,
+    )
+    rows = []
+    for snap in snapshots:
+        ts_str = snap.get("timestamp")
+        try:
+            ts_ms = int(ts_str)
+            iso = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).isoformat()
+        except (TypeError, ValueError):
+            iso = None
+        rows.append({
+            "snapshot_id": snap.get("id"),
+            "timestamp": ts_str,
+            "iso_time": iso,
+            "authors": [a.get("id") for a in (snap.get("authors") or [])],
+        })
+    return json.dumps({"agent": agent_name, "count": len(rows), "snapshots": rows}, indent=2)
+
+
+@mcp.tool()
+@auth_retry
+def get_agent_instruction_version(agent_name: str, timestamp: str) -> str:
+    """
+    Fetch the instructions at a specific historical snapshot, rendered as Markdown.
+
+    timestamp: the 'timestamp' field from list_agent_instruction_versions (a
+    string of milliseconds since epoch).
+
+    This is read-only — it does not modify the live agent.  Use it to
+    preview a snapshot before calling restore_agent_instruction_version.
+    """
+    cfg = _get_agent_config(agent_name)
+    token, user_id = _get_auth()
+    contents = notion_client.get_snapshot_contents(
+        cfg["notion_public_id"], cfg["space_id"], timestamp, token, user_id,
+    )
+    blocks_map = notion_client.snapshot_contents_to_blocks_map(contents)
+    if not blocks_map:
+        return "(Snapshot has no content)"
+    md = block_builder.blocks_to_markdown(blocks_map, cfg["notion_public_id"])
+    return md or "(Snapshot rendered to empty markdown)"
+
+
+@mcp.tool()
+@auth_retry
+def restore_agent_instruction_version(agent_name: str, timestamp: str) -> str:
+    """
+    Restore an agent's instruction block to a prior snapshot.
+
+    DESTRUCTIVE: replaces the live instructions page with the snapshot
+    contents.  Always call get_agent_instruction_version first to verify
+    the target snapshot is the one you want.
+
+    timestamp: the 'timestamp' field from list_agent_instruction_versions.
+
+    Does NOT automatically republish the agent — the caller should call
+    update_agent(agent_name) with no instructions_markdown argument to
+    publish, OR call publish_agent separately.
+    """
+    cfg = _get_agent_config(agent_name)
+    token, user_id = _get_auth()
+    result = notion_client.restore_snapshot(
+        cfg["notion_public_id"], cfg["space_id"], timestamp, token, user_id,
+    )
+    return json.dumps({"agent": agent_name, "timestamp": timestamp, "result": result}, indent=2)
+
+
+@mcp.tool()
+@auth_retry
 def update_agent(
     agent_name: str,
     instructions_markdown: str | None = None,

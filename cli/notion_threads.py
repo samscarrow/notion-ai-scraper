@@ -505,6 +505,131 @@ def unarchive_selected_workflow_threads(thread_ids: list[str], space_id: str,
     }
 
 
+# ── Snapshot (version history) API ───────────────────────────────────────────
+#
+# Notion's internal API exposes three endpoints for block version history:
+#   getSnapshotsList     — list historical snapshots for a block
+#   getSnapshotContents  — fetch the block tree as of a given snapshot timestamp
+#   enqueueTask(restoreSnapshot) — restore a block to a prior snapshot
+#
+# These were reverse-engineered from the live UI on 2026-04-10 while
+# recovering 28 instruction blocks wiped by the agent-mirror-watch feedback
+# loop.  They are the only reliable way to recover content that was wiped
+# via the public write path (diff_replace_block_content with an empty block
+# list), since Notion keeps automatic periodic snapshots internally.
+
+def get_snapshots_list(block_id: str, space_id: str,
+                       token_v2: str, user_id: str | None = None,
+                       size: int = 50) -> list[dict]:
+    """List historical snapshots for a block.
+
+    Returns a list of snapshot records, each containing:
+      id: snapshot UUID (distinct from block UUID)
+      timestamp: string — milliseconds since epoch, used as the key when
+                 fetching snapshot contents or restoring
+      authors: [{id, table}]
+      parent_id, parent_table: the block this snapshot covers
+    """
+    payload = {
+        "block": {"id": block_id, "spaceId": space_id},
+        "size": size,
+    }
+    result = _post("getSnapshotsList", payload, token_v2, user_id)
+    return result.get("snapshots", []) or []
+
+
+def get_snapshot_contents(block_id: str, space_id: str, timestamp: str,
+                          token_v2: str, user_id: str | None = None) -> dict:
+    """Fetch the full block tree as of a given snapshot timestamp.
+
+    Returns the raw response body containing:
+      contentMap.block — {block_id: {spaceId, value: {value: <block_data>}}}
+                         keyed by every block in the restored tree (root + descendants)
+      recordMap        — user records and related metadata
+
+    To convert to markdown, extract contentMap.block into a flat map of
+    {id: block_data} and pass to block_builder.blocks_to_markdown.
+    """
+    payload = {
+        "block": {"id": block_id, "spaceId": space_id},
+        "timestamp": str(timestamp),
+    }
+    return _post("getSnapshotContents", payload, token_v2, user_id)
+
+
+def snapshot_contents_to_blocks_map(contents: dict) -> dict:
+    """Flatten a getSnapshotContents response into a block_builder-compatible
+    blocks_map of the shape {id: {"value": <block_data>}}.
+
+    This matches the structure block_builder.blocks_to_markdown expects,
+    so the caller can render any snapshot to markdown with the normal
+    pipeline — no snapshot-specific rendering code needed.
+    """
+    cm = (contents or {}).get("contentMap") or {}
+    cm_block = cm.get("block") or {}
+    flat: dict[str, dict] = {}
+    for bid, wrapper in cm_block.items():
+        inner = (wrapper or {}).get("value") or {}
+        # contentMap nests as {spaceId, value: {value: <block>}}
+        block_value = inner.get("value") if isinstance(inner, dict) and "value" in inner else inner
+        if block_value:
+            flat[bid] = {"value": block_value}
+    return flat
+
+
+def restore_snapshot(block_id: str, space_id: str, timestamp: str,
+                     token_v2: str, user_id: str | None = None,
+                     should_restore_collection: bool = False,
+                     poll_interval: float = 0.5,
+                     max_wait_seconds: float = 60.0) -> dict:
+    """Restore a block to a historical snapshot.
+
+    Enqueues a restoreSnapshot task on the Notion backend and polls
+    getTasks until it reports success (or the timeout is hit).
+
+    block_id must be the live block UUID.  timestamp is the value from
+    a getSnapshotsList entry's 'timestamp' field (string of ms since epoch).
+
+    WARNING: This is a destructive operation against Notion state.
+    The current page contents will be replaced with the snapshot contents.
+    The caller is expected to have verified the target snapshot via
+    get_snapshot_contents + snapshot_contents_to_blocks_map first.
+    """
+    enqueue_payload = {
+        "task": {
+            "eventName": "restoreSnapshot",
+            "request": {
+                "block": {"id": block_id, "spaceId": space_id},
+                "timestamp": str(timestamp),
+                "shouldRestoreCollection": bool(should_restore_collection),
+            },
+            "cellRouting": {"spaceIds": []},
+        }
+    }
+    enqueue_resp = _post("enqueueTask", enqueue_payload, token_v2, user_id)
+    task_id = enqueue_resp.get("taskId")
+    if not task_id:
+        return {"status": "enqueue_failed", "response": enqueue_resp}
+
+    deadline = time.time() + max_wait_seconds
+    last = None
+    while time.time() < deadline:
+        time.sleep(poll_interval)
+        poll = _post("getTasks", {"taskIds": [task_id]}, token_v2, user_id)
+        tasks = poll.get("results") or []
+        if not tasks:
+            continue
+        task = tasks[0]
+        state = task.get("state")
+        last = task
+        if state == "success":
+            return {"status": "restored", "task_id": task_id, "task": task}
+        if state in ("failure", "canceled"):
+            return {"status": "failed", "task_id": task_id, "task": task}
+
+    return {"status": "timeout", "task_id": task_id, "task": last}
+
+
 def create_workflow_thread(notion_internal_id: str, space_id: str,
                            token_v2: str, user_id: str | None = None,
                            title: str = "New conversation") -> str:
