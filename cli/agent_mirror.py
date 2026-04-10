@@ -166,6 +166,14 @@ def compute_diff(manifest: dict, live: dict) -> list[dict]:
             desired_md = f.read().strip()
         live_md = (live.get("instructions") or "").strip()
 
+        # Safety guard: never propagate an empty local mirror to Notion.
+        # An empty desired_md almost always means the local file was cleared
+        # by a buggy sync, a transient read error, or the file was never
+        # populated — NOT an intentional wipe. Refuse to generate an update
+        # op in that case. A real wipe can be done manually via the Notion UI.
+        if not desired_md:
+            return ops
+
         if _md_hash(desired_md) != _md_hash(live_md):
             ops.append({
                 "type": "instructions",
@@ -251,7 +259,19 @@ def apply_ops(agent_name: str, ops: list[dict], publish: bool = True) -> list[st
 
     for op in ops:
         if op["type"] == "instructions":
-            new_blocks = block_builder.markdown_to_blocks(op["desired"])
+            desired = op.get("desired") or ""
+            new_blocks = block_builder.markdown_to_blocks(desired)
+            # Defense in depth: refuse to apply an empty block list.  This
+            # would call diff_replace_block_content with [] and delete every
+            # existing block in the live instruction page, wiping the agent.
+            # compute_diff already guards against empty desired_md, but this
+            # catches direct callers that construct ops another way.
+            if not new_blocks:
+                log.append(
+                    f"Instructions: REFUSED empty update (would wipe agent). "
+                    f"Check manifest '_instructions_path' and its target file."
+                )
+                continue
             stats = notion_client.diff_replace_block_content(
                 cfg["notion_public_id"], cfg["space_id"], new_blocks, token, user_id,
             )
