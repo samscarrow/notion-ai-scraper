@@ -162,16 +162,27 @@ def _project_snapshot(
 
 
 def _active_project_counts(client: notion_api.NotionAPIClient) -> Counter[str]:
+    """Count in-flight items per project for V20 WIP gate.
+
+    An item is in-flight when it has been consumed (dispatched) but has not yet
+    received a return.  Using Return Received At as the boundary is structurally
+    correct: it fires the moment handle_final_return writes the item, regardless
+    of whether the Status field has been updated yet.  This avoids the race
+    window where a terminal verdict exists but Status still reads "In Progress".
+    """
     cfg = get_config()
     pages = client.query_all(
         cfg.work_items_db_id,
-        filter_payload={"property": "Dispatch Requested Consumed At", "date": {"is_not_empty": True}},
+        filter_payload={
+            "and": [
+                {"property": "Dispatch Requested Consumed At", "date": {"is_not_empty": True}},
+                {"property": "Return Received At", "date": {"is_empty": True}},
+            ]
+        },
     )
     counts: Counter[str] = Counter()
     for page in pages:
         props = page.get("properties", {})
-        if _status(props) in TERMINAL_STATUSES:
-            continue
         for project_id in _relation_ids(props, "Project"):
             counts[project_id] += 1
     return counts
@@ -741,12 +752,16 @@ def accept_dispatch_start(
     cfg = get_config()
     now = notion_api.now_iso()
 
-    # Update Work Item properties
+    # Update Work Item properties.  Clear prior-run return timestamps so the
+    # V20 WIP gate (which counts items with Return Received At empty) correctly
+    # sees re-dispatched items as in-flight again.
     properties: dict[str, Any] = {
         "Dispatch Requested Consumed At": {"date": {"start": now}},
         "Status": {"status": {"name": "In Progress"}},
         "run_id": {"rich_text": [{"type": "text", "text": {"content": run_id}}]},
         "Blocked Reason": {"rich_text": []},
+        "Return Received At": {"date": None},
+        "Return Consumed At": {"date": None},
     }
 
     result = client.update_page(work_item_id, properties)

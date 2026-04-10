@@ -163,6 +163,7 @@ def _make_work_item(
     dispatch_mode: str | None = None,
     repo_ready: bool = True,
     dispatch_block: str | None = None,
+    return_received: str | None = None,
 ) -> tuple[str, dict]:
     """Build a dispatchable work item page dict."""
     page_id = page_id or str(uuid.uuid4())
@@ -203,6 +204,10 @@ def _make_work_item(
         "Dispatch Mode": {"type": "select", "select": {"name": dispatch_mode} if dispatch_mode else None},
         "Repo Ready": {"type": "checkbox", "checkbox": repo_ready},
         "Dispatch Block": {"type": "select", "select": {"name": dispatch_block} if dispatch_block else None},
+        "Return Received At": {
+            "type": "date",
+            "date": {"start": return_received} if return_received else None,
+        },
     }
     if project_ids:
         props["Project"] = {"type": "relation", "relation": [{"id": project_id} for project_id in project_ids]}
@@ -255,6 +260,14 @@ def _extract_select(page: dict, prop: str) -> str | None:
 
 def _extract_date(page: dict, prop: str) -> str | None:
     return ((page["properties"].get(prop, {}) or {}).get("date") or {}).get("start")
+
+
+def _extract_rich_text(page: dict, prop: str) -> str:
+    rich_text = (page["properties"].get(prop, {}) or {}).get("rich_text") or []
+    return "".join(
+        (chunk.get("plain_text") or chunk.get("text", {}).get("content") or "")
+        for chunk in rich_text
+    )
 
 
 # ── Automation simulator ─────────────────────────────────────────────────────
@@ -336,7 +349,7 @@ def _fresh_mock(page_id, page):
 
 
 class TestOpenClawE2E:
-    """Full 4-function chain: get -> build -> stamp -> return."""
+    """Full 4-function chain: get -> build -> accept -> return."""
 
     def test_gauntlet_pass(self):
         page_id, page = _make_work_item(item_type="Gauntlet")
@@ -347,8 +360,9 @@ class TestOpenClawE2E:
         assert r["items"][0]["id"] == page_id
         assert len(r["post_stamp_items"]) == 0
         assert r["return_result"]["ingested"] is True
-        assert _extract_status(mock.pages[page_id]) == "Passed"
+        assert _extract_status(mock.pages[page_id]) == "Done"
         assert _extract_select(mock.pages[page_id], "Verdict") == "Passed"
+        assert _extract_date(mock.pages[page_id], "Librarian Request Received At") is None
         assert len(mock.audit_log) == 2
         assert len(mock.blocks.get(page_id, [])) > 0
 
@@ -467,6 +481,38 @@ class TestOpenClawE2E:
 
         assert mock.pages[page_id]["properties"]["Blocked Reason"]["rich_text"] == []
 
+    def test_fail_dispatch_preflight_records_reason_without_false_in_progress(self):
+        page_id, page = _make_work_item()
+        mock = _fresh_mock(page_id, page)
+        packet = dispatch.build_dispatch_packet(page_id, mock)["packet"]
+
+        result = dispatch.fail_dispatch_preflight(page_id, packet["run_id"], "Repo not present on nix", mock)
+
+        assert result["status"] == "recorded"
+        assert _extract_status(mock.pages[page_id]) == "Not Started"
+        assert _extract_date(mock.pages[page_id], "Dispatch Requested Consumed At") is None
+        assert _extract_rich_text(mock.pages[page_id], "Blocked Reason") == "Repo not present on nix"
+        assert len(mock.audit_log) == 1
+
+    def test_fail_dispatch_preflight_reverts_false_accept(self):
+        page_id, page = _make_work_item(status="Prompt Drafted")
+        page["properties"]["Prompt Request Consumed At"] = {
+            "type": "date",
+            "date": {"start": "2026-03-10T00:05:00Z"},
+        }
+        mock = _fresh_mock(page_id, page)
+        packet = dispatch.build_dispatch_packet(page_id, mock)["packet"]
+
+        dispatch.accept_dispatch_start(page_id, packet["run_id"], mock)
+        result = dispatch.fail_dispatch_preflight(page_id, packet["run_id"], "Sandbox preparation failed", mock)
+
+        assert result["status"] == "reverted"
+        assert _extract_status(mock.pages[page_id]) == "Prompt Drafted"
+        assert _extract_date(mock.pages[page_id], "Dispatch Requested Consumed At") is None
+        assert mock.pages[page_id]["properties"]["run_id"]["rich_text"] == []
+        assert _extract_rich_text(mock.pages[page_id], "Blocked Reason") == "Sandbox preparation failed"
+        assert len(mock.audit_log) == 2
+
     def test_focus_projects_define_portfolio_candidate_set(self):
         focused_project_id, focused_project = _make_project(name="Focused", focus=True)
         held_project_id, held_project = _make_project(name="Held", focus=False)
@@ -488,6 +534,142 @@ class TestOpenClawE2E:
         focus_result = dispatch.build_dispatch_packet(focus_item_id, mock)
         assert focus_result["errors"] == []
         assert focus_result["packet"]["project_focus"] is True
+
+
+# ── V20 WIP-cap tests ────────────────────────────────────────────────────────
+
+
+class TestV20ProjectWipCap:
+    """V20: in-flight items count against WIP; terminal-verdict items do not."""
+
+    def _make_in_flight_item(self, project_id: str, name: str = "IN-FLIGHT") -> tuple[str, dict]:
+        """Consumed but not yet returned — should count as WIP."""
+        return _make_work_item(
+            name=name,
+            status="In Progress",
+            dispatch_consumed="2026-03-10T00:05:00Z",
+            return_received=None,
+            project_ids=[project_id],
+        )
+
+    def _make_returned_item(self, project_id: str, name: str = "RETURNED") -> tuple[str, dict]:
+        """Consumed AND returned — terminal verdict, must NOT count as WIP."""
+        return _make_work_item(
+            name=name,
+            status="Done",
+            dispatch_consumed="2026-03-10T00:05:00Z",
+            return_received="2026-03-10T01:00:00Z",
+            project_ids=[project_id],
+        )
+
+    def test_v20_fires_when_in_flight_items_hit_cap(self):
+        proj_id, proj = _make_project(name="Capped", max_active_items=1)
+        # One in-flight item already consuming the cap
+        existing_id, existing = self._make_in_flight_item(proj_id, "EXISTING-1")
+        # New candidate wants to dispatch into the same project
+        candidate_id, candidate = _make_work_item(
+            name="CANDIDATE-1", project_ids=[proj_id], repo_ready=True
+        )
+
+        mock = NotionStateMock()
+        mock.add_page(proj_id, proj, PROJECTS_DB)
+        mock.add_page(existing_id, existing, WORK_ITEMS_DB)
+        mock.add_page(candidate_id, candidate, WORK_ITEMS_DB)
+
+        result = dispatch.build_dispatch_packet(candidate_id, mock)
+        assert any("V20" in e for e in result["errors"]), result["errors"]
+
+    def test_v20_does_not_fire_when_returned_item_clears_wip(self):
+        proj_id, proj = _make_project(name="Capped", max_active_items=1)
+        # Prior item has received a terminal return — should NOT count
+        returned_id, returned = self._make_returned_item(proj_id, "RETURNED-1")
+        candidate_id, candidate = _make_work_item(
+            name="CANDIDATE-2", project_ids=[proj_id], repo_ready=True
+        )
+
+        mock = NotionStateMock()
+        mock.add_page(proj_id, proj, PROJECTS_DB)
+        mock.add_page(returned_id, returned, WORK_ITEMS_DB)
+        mock.add_page(candidate_id, candidate, WORK_ITEMS_DB)
+
+        result = dispatch.build_dispatch_packet(candidate_id, mock)
+        assert not any("V20" in e for e in result["errors"]), result["errors"]
+
+    def test_v20_redispatch_clears_return_timestamps_and_counts_as_wip(self):
+        """After a human unblocks and re-dispatches a previously-returned item,
+        accept_dispatch_start must clear Return Received At so the re-run counts
+        toward WIP again.  Without this, the re-dispatched item would be
+        invisible to V20 and could exceed the project cap."""
+        proj_id, proj = _make_project(name="Capped", max_active_items=1)
+        # Prior run: item returned (Blocked), now unblocked by human to
+        # Prompt Drafted, ready for re-dispatch
+        retried_id, retried = _make_work_item(
+            name="RETRIED-1",
+            status="Prompt Drafted",
+            dispatch_consumed="2026-03-10T00:05:00Z",
+            return_received="2026-03-10T01:00:00Z",
+            project_ids=[proj_id],
+        )
+        retried["properties"]["Return Consumed At"] = {
+            "type": "date",
+            "date": {"start": "2026-03-10T01:00:00Z"},
+        }
+
+        mock = NotionStateMock()
+        mock.add_page(proj_id, proj, PROJECTS_DB)
+        mock.add_page(retried_id, retried, WORK_ITEMS_DB)
+
+        # Simulate re-dispatch: stamp Lab Dispatch Requested At fresh
+        retried["properties"]["Lab Dispatch Requested At"] = {
+            "type": "date",
+            "date": {"start": "2026-03-11T00:00:00Z"},
+        }
+        retried["properties"]["Dispatch Requested Consumed At"] = {
+            "type": "date",
+            "date": None,
+        }
+
+        dispatch.accept_dispatch_start(retried_id, "run-retry-1", mock)
+
+        props = mock.pages[retried_id]["properties"]
+        assert (props["Return Received At"].get("date") or {}).get("start") is None
+        assert (props["Return Consumed At"].get("date") or {}).get("start") is None
+
+        # Now a second item in the same project should be blocked by V20
+        candidate_id, candidate = _make_work_item(
+            name="CANDIDATE-4", project_ids=[proj_id], repo_ready=True
+        )
+        mock.add_page(candidate_id, candidate, WORK_ITEMS_DB)
+
+        result = dispatch.build_dispatch_packet(candidate_id, mock)
+        assert any("V20" in e for e in result["errors"]), result["errors"]
+
+    def test_v20_status_lag_does_not_count_returned_item(self):
+        """Return Received At is set but Status still reads 'In Progress' (lag window).
+
+        The old approach (filtering by terminal Status) would count this item.
+        The new approach (filtering by Return Received At is empty) correctly excludes it.
+        """
+        proj_id, proj = _make_project(name="Capped", max_active_items=1)
+        # Status hasn't been updated yet but return has been received
+        lagged_id, lagged = _make_work_item(
+            name="LAGGED-1",
+            status="In Progress",  # Status update hasn't landed yet
+            dispatch_consumed="2026-03-10T00:05:00Z",
+            return_received="2026-03-10T01:00:00Z",  # Return IS recorded
+            project_ids=[proj_id],
+        )
+        candidate_id, candidate = _make_work_item(
+            name="CANDIDATE-3", project_ids=[proj_id], repo_ready=True
+        )
+
+        mock = NotionStateMock()
+        mock.add_page(proj_id, proj, PROJECTS_DB)
+        mock.add_page(lagged_id, lagged, WORK_ITEMS_DB)
+        mock.add_page(candidate_id, candidate, WORK_ITEMS_DB)
+
+        result = dispatch.build_dispatch_packet(candidate_id, mock)
+        assert not any("V20" in e for e in result["errors"]), result["errors"]
 
 
 # ── Auditor-after-loop tests ────────────────────────────────────────────────
