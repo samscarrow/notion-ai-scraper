@@ -1702,8 +1702,11 @@ def _sync_mirrors_background():
                 yaml_content, instructions = dump_as_manifest(agent_name)
                 with open(os.path.join(mirrors_dir, f"{agent_name}.yaml"), "w") as f:
                     f.write(yaml_content)
-                with open(os.path.join(mirrors_dir, f"{agent_name}.md"), "w") as f:
-                    f.write(instructions)
+                md_path = os.path.join(mirrors_dir, f"{agent_name}.md")
+                existing_has_content = os.path.exists(md_path) and os.path.getsize(md_path) > 0
+                if instructions or not existing_has_content:
+                    with open(md_path, "w") as f:
+                        f.write(instructions or "")
             except Exception:
                 pass
     except Exception:
